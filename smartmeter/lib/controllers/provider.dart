@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:smartmeter/models/app_model.dart';
 import 'package:smartmeter/services/energy_repo.dart';
@@ -176,44 +175,62 @@ class ApplianceProvider extends ChangeNotifier {
   }
 }
 
-class GoalProvider extends ChangeNotifier {
-  double _targetKwh = 0.0;
-  double _currentUsageKwh = 0.0;
+class GoalProvider with ChangeNotifier {
+  final EnergyRepository _repo;
+  StreamSubscription? _sub;
+  GoalProvider(this._repo);
 
-  double get target => _targetKwh;
-  double get current => _currentUsageKwh;
+  double _target = 0;
+  double _current = 0;
+  
+  // State to track which mode we are in (for the 'setGoal' function)
+  bool _isCampusMode = false; 
+  String? _currentUserId;
 
-  double get progress {
-    if (_targetKwh <= 0) return 0.0;
-    return (_currentUsageKwh / _targetKwh).clamp(0.0, 1.0);
+  double get target => _target;
+  double get current => _current;
+  
+  double get progress => _target > 0 ? (_current / _target).clamp(0.0, 1.0) : 0.0;
+  bool get isOverBudget => _target > 0 && _current > _target;
+
+  // --- MODE A: STUDENT ---
+  void subscribeToStudent(String uid) {
+    _isCampusMode = false;
+    _currentUserId = uid;
+    _sub?.cancel();
+
+    _sub = _repo.getStudentGoalStream(uid).listen((data) {
+      _target = (data['energyGoal'] ?? 0).toDouble();
+      _current = (data['currentUsage'] ?? 0).toDouble();
+      notifyListeners();
+    });
   }
 
-  bool get isOverBudget => _targetKwh > 0 && _currentUsageKwh > _targetKwh;
+  // --- MODE B: STAFF ---
+  void subscribeToCampus() {
+    _isCampusMode = true;
+    _currentUserId = null;
+    _sub?.cancel();
 
-  GoalProvider() {
-    _loadInitialData();
+    _sub = _repo.getCampusGoalStream().listen((data) {
+      _target = (data['monthlyGoal'] ?? 5000).toDouble(); 
+      _current = (data['totalUsage'] ?? 0).toDouble();
+      notifyListeners();
+    });
   }
 
-  Future<void> _loadInitialData() async {
-    final prefs = await SharedPreferences.getInstance();
-    _targetKwh = prefs.getDouble('energy_goal') ?? 0.0;
-
-    // Future integration: Fetch real-time usage from Firestore here.
-    // _currentUsageKwh = await repository.getCurrentMonthUsage();
-
-    notifyListeners();
-  }
-
+  // --- SHARED UPDATE LOGIC ---
   Future<void> setGoal(double newGoal) async {
-    _targetKwh = newGoal;
-    notifyListeners();
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble('energy_goal', newGoal);
+    if (_isCampusMode) {
+      await _repo.updateCampusGoal(newGoal);
+    } else if (_currentUserId != null) {
+      await _repo.updateStudentGoal(_currentUserId!, newGoal);
+    }
   }
 
-  void updateUsage(double kwh) {
-    _currentUsageKwh = kwh;
-    notifyListeners();
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
   }
 }

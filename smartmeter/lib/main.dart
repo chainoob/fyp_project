@@ -14,7 +14,7 @@ void main() async {
   final EnergyRepository repository = FirestoreRepository();
   final authProvider = AppAuthProvider(repository);
   final applianceProvider = ApplianceProvider(repository);
-  final goalProvider = GoalProvider();
+  final goalProvider = GoalProvider(repository);
 
   final GoRouter router = AppRouter.create(authProvider);
 

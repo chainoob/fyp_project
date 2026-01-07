@@ -30,6 +30,7 @@ class _StaffShellState extends State<StaffShell> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<ApplianceProvider>().subscribeToQueue();
+      context.read<GoalProvider>().subscribeToCampus();
     });
   }
 
@@ -146,15 +147,14 @@ class StaffDashboard extends StatelessWidget {
         const Text("Energy Plan & Alerts", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
         const SizedBox(height: 12),
 
-        // B. Energy Goal Card (Replaces "Set Energy Plan" & "Overload Alerts")
-        // This card now serves as the notification center
+        // Energy Goal Card 
         const EnergyGoalCard(title: "Campus Monthly Plan"),
 
         const SizedBox(height: 24),
         const Text("Infrastructure", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
         const SizedBox(height: 12),
 
-        // C. Manage Blocks (Full Width Action Card)
+        // Manage Blocks (
         Material(
           color: Colors.white,
           elevation: 2,
@@ -212,14 +212,14 @@ class StaffReportsPage extends StatefulWidget {
 
 class _StaffReportsPageState extends State<StaffReportsPage> {
   // --- SELECTION STATE ---
-  String _selectedScope = 'Campus'; // Campus, Block, Unit
+  String _selectedScope = 'Campus'; 
   int _selectedMonth = DateTime.now().month;
   int _selectedYear = DateTime.now().year;
   String? _selectedBlockId;
   String? _selectedUnitId;
 
   // --- DATA VARIABLES (To be populated by Backend) ---
-  // TODO: Fetch these lists from Firestore on init or scope change
+  // TODO: Fetch these lists from Firestore
   List<Map<String, dynamic>> _availableBlocks = []; 
   List<Map<String, dynamic>> _availableUnits = []; 
   List<Map<String, dynamic>> _reportHistory = [];
@@ -238,130 +238,137 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
     // -------------------------------------------------------------------------
     // TODO: BACKEND INTEGRATION
     // -------------------------------------------------------------------------
-    // 1. Fetch available Blocks/Units based on staff permissions or hierarchy.
-    //    _availableBlocks = await _repo.getBlocks();
-    // 2. Fetch Report History.
-    //    _reportHistory = await _repo.getReportHistory();
-    // 3. SetState to update UI.
+    // 1. Fetch available Blocks/Units based on permissions
+    // 2. Fetch Report History
     // -------------------------------------------------------------------------
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey[50],
+      backgroundColor: Colors.black, // Dark Background
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
           // 1. REPORT CONFIGURATION CARD
-          Card(
-            elevation: 0,
-            shape: RoundedRectangleBorder(
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: AppTheme.surface, // Using dark surface color
               borderRadius: BorderRadius.circular(16),
-              side: BorderSide(color: Colors.grey.withValues(alpha: 0.2))
+              border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
             ),
-            color: Colors.white,
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text("Report Parameters", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 20),
-                  
-                  // A. SCOPE SELECTOR
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("Report Parameters", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                const SizedBox(height: 20),
+                
+                // A. SCOPE SELECTOR
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedScope,
+                  decoration: _inputDecor("Report Scope", Icons.radar),
+                  dropdownColor: AppTheme.surface,
+                  style: const TextStyle(color: Colors.white),
+                  items: _scopes.map((s) => DropdownMenuItem(
+                    value: s, 
+                    child: Text("$s Level Report", style: const TextStyle(color: Colors.white))
+                  )).toList(),
+                  onChanged: (val) => setState(() {
+                    _selectedScope = val!;
+                    _selectedBlockId = null;
+                    _selectedUnitId = null;
+                  }),
+                ),
+                const SizedBox(height: 16),
+
+                // B. CONDITIONAL DROPDOWNS (Dynamic Data)
+                if (_selectedScope == 'Block' || _selectedScope == 'Unit') ...[
                   DropdownButtonFormField<String>(
-                    initialValue: _selectedScope,
-                    decoration: _inputDecor("Report Scope", Icons.radar),
-                    items: _scopes.map((s) => DropdownMenuItem(value: s, child: Text("$s Level Report"))).toList(),
-                    onChanged: (val) => setState(() {
-                      _selectedScope = val!;
-                      _selectedBlockId = null;
-                      _selectedUnitId = null;
-                      // TODO: Trigger fetch for sub-units if needed
-                    }),
+                    initialValue: _selectedBlockId,
+                    decoration: _inputDecor("Select Block", Icons.apartment),
+                    dropdownColor: AppTheme.surface,
+                    style: const TextStyle(color: Colors.white),
+                    items: _availableBlocks.map((b) => DropdownMenuItem(
+                      value: b['id'] as String, 
+                      child: Text(b['name'] as String, style: const TextStyle(color: Colors.white))
+                    )).toList(),
+                    onChanged: (val) => setState(() => _selectedBlockId = val),
+                    hint: const Text("Choose a block...", style: TextStyle(color: Colors.grey)),
                   ),
                   const SizedBox(height: 16),
-
-                  // B. CONDITIONAL DROPDOWNS (Dynamic Data)
-                  if (_selectedScope == 'Block' || _selectedScope == 'Unit') ...[
-                    DropdownButtonFormField<String>(
-                      initialValue: _selectedBlockId,
-                      decoration: _inputDecor("Select Block", Icons.apartment),
-                      // TODO: Map _availableBlocks variable here
-                      items: _availableBlocks.map((b) => DropdownMenuItem(
-                        value: b['id'] as String, 
-                        child: Text(b['name'] as String)
-                      )).toList(),
-                      onChanged: (val) => setState(() => _selectedBlockId = val),
-                      hint: const Text("Choose a block..."),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-
-                  if (_selectedScope == 'Unit') ...[
-                     DropdownButtonFormField<String>(
-                      initialValue: _selectedUnitId,
-                      decoration: _inputDecor("Select Unit", Icons.holiday_village),
-                      // TODO: Map _availableUnits variable here
-                      items: _availableUnits.map((u) => DropdownMenuItem(
-                        value: u['id'] as String, 
-                        child: Text(u['name'] as String)
-                      )).toList(),
-                      onChanged: (val) => setState(() => _selectedUnitId = val),
-                      hint: const Text("Choose a unit..."),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-
-                  // C. DATE SELECTOR
-                  Row(
-                    children: [
-                      Expanded(
-                        child: DropdownButtonFormField<int>(
-                          initialValue: _selectedMonth,
-                          decoration: _inputDecor("Month", Icons.calendar_month),
-                          items: _months.map((m) => DropdownMenuItem(
-                            value: m, 
-                            child: Text(_getMonthName(m))
-                          )).toList(),
-                          onChanged: (val) => setState(() => _selectedMonth = val!),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: DropdownButtonFormField<int>(
-                          value: _selectedYear,
-                          decoration: _inputDecor("Year", Icons.calendar_today),
-                          items: _years.map((y) => DropdownMenuItem(value: y, child: Text(y.toString()))).toList(),
-                          onChanged: (val) => setState(() => _selectedYear = val!),
-                        ),
-                      ),
-                    ],
-                  ),
-                  
-                  const SizedBox(height: 24),
-                  
-                  // D. GENERATE BUTTON
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        // TODO: Implement Generate Report Logic
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.navyBlue,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        elevation: 2,
-                      ),
-                      icon: const Icon(Icons.print),
-                      label: const Text("GENERATE REPORT", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                    ),
-                  ),
                 ],
-              ),
+
+                if (_selectedScope == 'Unit') ...[
+                   DropdownButtonFormField<String>(
+                    initialValue: _selectedUnitId,
+                    decoration: _inputDecor("Select Unit", Icons.holiday_village),
+                    dropdownColor: AppTheme.surface,
+                    style: const TextStyle(color: Colors.white),
+                    items: _availableUnits.map((u) => DropdownMenuItem(
+                      value: u['id'] as String, 
+                      child: Text(u['name'] as String, style: const TextStyle(color: Colors.white))
+                    )).toList(),
+                    onChanged: (val) => setState(() => _selectedUnitId = val),
+                    hint: const Text("Choose a unit...", style: TextStyle(color: Colors.grey)),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+
+                // C. DATE SELECTOR
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<int>(
+                        initialValue: _selectedMonth,
+                        decoration: _inputDecor("Month", Icons.calendar_month),
+                        dropdownColor: AppTheme.surface,
+                        style: const TextStyle(color: Colors.white),
+                        items: _months.map((m) => DropdownMenuItem(
+                          value: m, 
+                          child: Text(_getMonthName(m), style: const TextStyle(color: Colors.white))
+                        )).toList(),
+                        onChanged: (val) => setState(() => _selectedMonth = val!),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: DropdownButtonFormField<int>(
+                        initialValue: _selectedYear,
+                        decoration: _inputDecor("Year", Icons.calendar_today),
+                        dropdownColor: AppTheme.surface,
+                        style: const TextStyle(color: Colors.white),
+                        items: _years.map((y) => DropdownMenuItem(
+                          value: y, 
+                          child: Text(y.toString(), style: const TextStyle(color: Colors.white))
+                        )).toList(),
+                        onChanged: (val) => setState(() => _selectedYear = val!),
+                      ),
+                    ),
+                  ],
+                ),
+                
+                const SizedBox(height: 24),
+                
+                // D. GENERATE BUTTON
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      // TODO: Implement Generate Report Logic
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.ecoTeal,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      elevation: 2,
+                    ),
+                    icon: const Icon(Icons.print),
+                    label: const Text("GENERATE REPORT", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  ),
+                ),
+              ],
             ),
           ),
 
@@ -373,7 +380,7 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
           if (_reportHistory.isEmpty)
              const Padding(
                padding: EdgeInsets.all(20.0),
-               child: Center(child: Text("No reports generated yet.", style: TextStyle(color: Colors.grey))),
+               child: Center(child: Text("No reports generated yet.", style: TextStyle(color: Colors.white24))),
              )
           else
             ..._reportHistory.map((report) => _buildHistoryItem(
@@ -392,8 +399,18 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
   InputDecoration _inputDecor(String label, IconData icon) {
     return InputDecoration(
       labelText: label,
+      labelStyle: const TextStyle(color: Colors.grey),
       prefixIcon: Icon(icon, color: Colors.grey),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+      filled: true,
+      fillColor: Colors.white.withValues(alpha: 0.05), 
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: AppTheme.ecoTeal),
+      ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
     );
   }
@@ -407,21 +424,21 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppTheme.surface,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.withValues(alpha: 0.1)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
       ),
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         leading: Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: Colors.red.withValues(alpha: 0.1),
+            color: Colors.red.withValues(alpha: 0.2),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: const Icon(Icons.picture_as_pdf, color: Colors.red),
+          child: const Icon(Icons.picture_as_pdf, color: Colors.redAccent),
         ),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white)),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -429,17 +446,17 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
-                color: Colors.grey.withValues(alpha: 0.1),
+                color: Colors.white.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(4)
               ),
               child: Text(type, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey)),
             ),
             const SizedBox(height: 4),
-            Text("$date • $size", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            Text("$date • $size", style: const TextStyle(fontSize: 12, color: Colors.white54)),
           ],
         ),
         trailing: IconButton(
-          icon: const Icon(Icons.download_rounded, color: AppTheme.navyBlue),
+          icon: const Icon(Icons.download_rounded, color: AppTheme.ecoTeal),
           onPressed: () {
             // TODO: Implement Download Logic
           },

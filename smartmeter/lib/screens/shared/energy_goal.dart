@@ -29,7 +29,6 @@ class EnergyGoalCard extends StatelessWidget {
           keyboardType: TextInputType.number,
           decoration: const InputDecoration(
             labelText: "Target (kWh)",
-            hintText: "e.g. 200",
             border: OutlineInputBorder(),
             suffixText: "kWh",
           ),
@@ -183,7 +182,7 @@ class EnergyGoalCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                            isOver ? "Critical Alert" : "System Warning",
+                            isOver ? "Limit Exceeded" : "Warning",
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 12, 
@@ -191,7 +190,10 @@ class EnergyGoalCard extends StatelessWidget {
                             )
                         ),
                         Text(
-                            isOver ? "Campus limit exceeded! Check heavy appliances." : "Campus energy usage is nearing the monthly limit.",
+                            // CHANGED: Removed "Campus" to be generic for everyone
+                            isOver 
+                              ? "Usage limit exceeded! Reduce consumption." 
+                              : "You are nearing the monthly energy limit.",
                             style: TextStyle(fontSize: 12, color: isOver ? Colors.red : Colors.orange)
                         ),
                       ],

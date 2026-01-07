@@ -16,11 +16,16 @@ abstract class EnergyRepository {
   Future signInWithGoogle();
 
     Stream<List<Appliance>> getAppliancesStream(String userId);
-    Stream<List<Appliance>> getPendingVerificationStream();
+    Stream<List<Appliance>>  getPendingVerificationStream();
 
     Future<void> addAppliance(String userId, Appliance app);
     Future<void> updateApplianceStatus(String userId, String appId, String status);
     Future<void> triggerDisaggregation(String userId, String billId, double totalBill);
+
+    Stream<Map<String, dynamic>> getStudentGoalStream(String uid);
+    Future<void> updateStudentGoal(String uid, double newGoal);
+    Stream<Map<String, dynamic>> getCampusGoalStream();
+    Future<void> updateCampusGoal(double newGoal);
   }
 
   class FirestoreRepository implements EnergyRepository {
@@ -185,5 +190,40 @@ abstract class EnergyRepository {
     if (response.statusCode != 200) {
       throw Exception('Disaggregation API Failed: ${response.body}');
     }
+  }
+  @override
+  Stream<Map<String, dynamic>> getStudentGoalStream(String uid) {
+    return _db.collection('users').doc(uid).snapshots().map((doc) {
+      // Return a map or a custom model if you have one
+      return doc.exists ? doc.data()! : {}; 
+    });
+  }
+
+  @override
+  Future<void> updateStudentGoal(String uid, double newGoal) async {
+    await _db.collection('users').doc(uid).update({'energyGoal': newGoal});
+  }
+
+  // --- CAMPUS/STAFF METHODS ---
+
+  // Stream for shared campus goal
+  @override
+  Stream<Map<String, dynamic>> getCampusGoalStream() {
+    return _db.collection('campus').doc('config').snapshots().map((doc) {
+      if (!doc.exists) {
+        // Create default if missing
+        doc.reference.set({'monthlyGoal': 5000, 'totalUsage': 0});
+        return {'monthlyGoal': 5000, 'totalUsage': 0};
+      }
+      return doc.data()!;
+    });
+  }
+
+  @override
+  Future<void> updateCampusGoal(double newGoal) async {
+  await _db.collection('campus').doc('config').set(
+    {'monthlyGoal': newGoal}, 
+    SetOptions(merge: true),
+  );
   }
 }

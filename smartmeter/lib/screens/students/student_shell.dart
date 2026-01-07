@@ -27,7 +27,10 @@ class _StudentShellState extends State<StudentShell> {
   void initState() {
     super.initState();
     final uid = context.read<AppAuthProvider>().currentUser?.uid;
-    if (uid != null) context.read<ApplianceProvider>().subscribeToUser(uid);
+    if (uid != null) {
+      context.read<ApplianceProvider>().subscribeToUser(uid);
+      context.read<GoalProvider>().subscribeToStudent(uid);
+    }
   }
 
   @override
