@@ -35,8 +35,6 @@ class Users {
       photoUrl: data['photoUrl']
     );
   }
-
-  String get displayName => name;
 }
 
 // --- APPLIANCE MODEL ---

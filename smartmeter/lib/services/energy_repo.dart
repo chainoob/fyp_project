@@ -10,7 +10,7 @@ abstract class EnergyRepository {
   Stream<Users?> get authStateChanges;
   Future<void> signIn(String email, String password);
   Future<void> signOut();
-  Future<void> saveUserProfile(String uid, Map<String, dynamic> userData);
+  Future<void> register(String email, String password, Map<String, dynamic> userData);
   Future<String?> fetchUserRole(String uid);
   Future<bool> handleGoogleAuth(GoogleSignInAccount googleUser);
   Future signInWithGoogle();
@@ -65,16 +65,22 @@ abstract class EnergyRepository {
   }
 
   @override
-  @override
-  Future<void> saveUserProfile(String uid, Map<String, dynamic> userData) async {
-    await _db.collection('users').doc(uid).set(
-      {
-        ...userData,
-        'updatedAt': FieldValue.serverTimestamp(),
-        'createdAt': FieldValue.serverTimestamp(), 
-      }, 
-      SetOptions(merge: true),
-    );
+  Future<void> register(String email, String password, Map<String, dynamic> additionalData) async {
+  // Create Auth User
+  final credential = await _auth.createUserWithEmailAndPassword(
+  email: email,
+  password: password
+  );
+
+  // Create Firestore Document
+  if (credential.user != null) {
+  await _db.collection('users').doc(credential.user!.uid).set({
+  'uid': credential.user!.uid,
+  'email': email,
+  ...additionalData, 
+  'createdAt': FieldValue.serverTimestamp(),
+  });
+  }
   }
 
   @override
@@ -140,14 +146,7 @@ abstract class EnergyRepository {
         .doc(userId)
         .collection('appliances')
         .snapshots()
-        .map((snapshot) {
-        return snapshot.docs.map((doc) {
-          final data = doc.data();
-          data['id'] = doc.id; 
-    
-          return Appliance.fromFirestore(doc);
-        }).toList();
-      });
+        .map((snapshot) => snapshot.docs.map((doc) => Appliance.fromFirestore(doc)).toList());
   }
 
   @override
