@@ -44,15 +44,18 @@ class AppAuthProvider extends ChangeNotifier {
   }
 
   // --- 2. SIGN UP ---
-  Future<void> signUp({
-    required String email,
-    required String password,
-    required Map<String, dynamic> additionalData,
-  }) async {
+ Future<void> completeGoogleProfile(Map<String, dynamic> additionalData) async {
     _isLoading = true;
     notifyListeners();
+
     try {
-      await _repo.register(email, password, additionalData);
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw Exception("No authenticated user found");
+
+      await _repo.saveUserProfile(user.uid, additionalData);
+
+      _pendingGoogleUser = null; 
+      await fetchUserRole();     
     } catch (e) {
       rethrow;
     } finally {
@@ -111,6 +114,26 @@ class AppAuthProvider extends ChangeNotifier {
       _role = 'student';
     }
     notifyListeners();
+  }
+
+  Future<void> linkPassword(String password) async {
+    final user = FirebaseAuth.instance.currentUser;
+    
+    if (user != null && user.email != null) {
+      try {
+        AuthCredential credential = EmailAuthProvider.credential(
+          email: user.email!, 
+          password: password
+        );
+        
+        await user.linkWithCredential(credential);
+      } on FirebaseAuthException catch (e) {
+        // Ignore if already linked, otherwise rethrow to UI
+        if (e.code != 'provider-already-linked') {
+          rethrow;
+        }
+      }
+    }
   }
 }
 

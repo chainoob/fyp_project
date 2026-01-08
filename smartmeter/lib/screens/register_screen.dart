@@ -31,9 +31,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
   @override
   void initState() {
     super.initState();
-    final provider = context.read<AppAuthProvider>();
-    if (widget.initialMatric != null) _matricCtrl.text = provider.pendingGoogleUser!.email;
-    if (widget.initialEmail != null) _emailCtrl.text = provider.pendingGoogleUser!.displayName ?? '';
+    final user = context.read<AppAuthProvider>().currentUser;
+    if (user != null) {
+      _usernameCtrl.text = user.displayName ?? '';
+    }
   }
 
   @override
@@ -47,33 +48,39 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Future<void> _handleRegister() async {
     if (!_formKey.currentState!.validate()) return;
-
     setState(() => _isLoading = true);
 
     try {
-      final userData = {
+      final authProvider = context.read<AppAuthProvider>();
+      final user = authProvider.currentUser;
+      
+      if (user == null) throw Exception("User session not found");
+
+      // Link the new password to the existing Google account
+      if (_passCtrl.text.isNotEmpty) {
+        await authProvider.linkPassword(_passCtrl.text);
+      }
+
+      // Prepare profile data
+      final Map<String, dynamic> userData = {
         'displayName': _usernameCtrl.text.trim(),
         'role': _selectedRole,
         'studentId': _matricCtrl.text.trim(),
+        'email': user.email, 
       };
-
-      await context.read<AppAuthProvider>().signUp(
-        email: _emailCtrl.text.trim(),
-        password: _passCtrl.text,
-        additionalData: userData,
-      );
+      
+      // Save to Firestore
+      await authProvider.completeGoogleProfile(userData);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Account created successfully")),
-        );
-        await context.read<AppAuthProvider>().signOut();
-        if (!mounted) return;
-        Navigator.pop(context);
+        Navigator.of(context).pushNamedAndRemoveUntil('/student_home', (route) => false);
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("Registration Error: $e"), 
+          backgroundColor: Colors.red
+        ));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
