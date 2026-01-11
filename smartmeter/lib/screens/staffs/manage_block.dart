@@ -524,40 +524,64 @@ class _StudentSearchSheet extends StatefulWidget {
 class _StudentSearchSheetState extends State<_StudentSearchSheet> {
   final TextEditingController _searchCtrl = TextEditingController();
   List<Map<String, dynamic>> _results = [];
-  bool _isLoading = false;
+  bool _isLoading = true; 
   Timer? _debounce;
+
+  @override
+  void initState() {
+    super.initState();
+    _performSearch(""); 
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    _debounce?.cancel();
+    super.dispose();
+  }
 
   void _onSearchChanged(String query) {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
     _debounce = Timer(const Duration(milliseconds: 500), () {
-      if (query.length >= 2) {
-        _performSearch(query);
-      } else {
-        setState(() => _results = []);
-      }
+      _performSearch(query);
     });
   }
 
   Future<void> _performSearch(String query) async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
-    try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .where('role', isEqualTo: 'student')
-          .where('displayName', isGreaterThanOrEqualTo: query)
-          .where('displayName', isLessThan: '$query\uf8ff')
-          .limit(10)
-          .get();
 
-      final results = snapshot.docs.map((doc) => {
-        'uid': doc.id,
-        'name': doc['displayName'] ?? 'Unknown',
-        'email': doc['email'] ?? '',
+    try {
+      // Base Query: Always look for students
+      Query ref = FirebaseFirestore.instance
+          .collection('users')
+          .where('role', isEqualTo: 'student');
+
+      // Filter logic: Only apply if user typed something
+      if (query.trim().isNotEmpty) {
+        ref = ref
+            .where('displayName', isGreaterThanOrEqualTo: query)
+            .where('displayName', isLessThan: '$query\uf8ff');
+      } else {
+        ref = ref.orderBy('email');
+      }
+
+      // Limit results to prevent reading the whole database
+      final snapshot = await ref.limit(20).get();
+
+      final results = snapshot.docs.map((doc) {
+        final data = doc.data() as Map<String, dynamic>;
+        return {
+          'uid': doc.id,
+          'name': data['displayName'] ?? data['name'] ?? 'Unknown',
+          'email': data['email'] ?? '',
+        };
       }).toList();
 
       if (mounted) setState(() => _results = results);
+      
     } catch (e) {
-      // Handle error
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -570,32 +594,58 @@ class _StudentSearchSheetState extends State<_StudentSearchSheet> {
       height: MediaQuery.of(context).size.height * 0.7,
       child: Column(
         children: [
+          // Drag Handle
+          Container(
+            width: 40, height: 4, 
+            margin: const EdgeInsets.only(bottom: 20),
+            decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+          ),
+          
           const Text("Assign Student", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
           const SizedBox(height: 16),
+          
           TextField(
             controller: _searchCtrl,
             onChanged: _onSearchChanged,
             decoration: InputDecoration(
+              labelText: "Search Name",
               prefixIcon: const Icon(Icons.search),
-              suffixIcon: _isLoading ? const Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 2)) : null,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              suffixIcon: _isLoading 
+                ? const Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 2)) 
+                : (_searchCtrl.text.isNotEmpty 
+                    ? IconButton(
+                        icon: const Icon(Icons.clear), 
+                        onPressed: () {
+                          _searchCtrl.clear();
+                          _performSearch(""); 
+                        }) 
+                    : null),
             ),
           ),
           const SizedBox(height: 16),
+          
           Expanded(
-            child: _results.isEmpty 
-              ? const Center(child: Text("No results found", style: TextStyle(color: Colors.grey))) 
-              : ListView.builder(
-                  itemCount: _results.length,
-                  itemBuilder: (context, index) {
-                    final student = _results[index];
-                    return ListTile(
-                      leading: const CircleAvatar(child: Icon(Icons.person)),
-                      title: Text(student['name']),
-                      subtitle: Text(student['email']),
-                      onTap: () => Navigator.pop(context, student),
-                    );
-                  },
-                ),
+            child: _isLoading 
+              ? const Center(child: CircularProgressIndicator())
+              : _results.isEmpty 
+                ? const Center(child: Text("No students found", style: TextStyle(color: Colors.grey))) 
+                : ListView.separated(
+                    itemCount: _results.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final student = _results[index];
+                      return ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: AppTheme.ecoTeal.withValues(alpha: 0.1),
+                          child: const Icon(Icons.person, color: AppTheme.ecoTeal),
+                        ),
+                        title: Text(student['name'], style: const TextStyle(fontWeight: FontWeight.w600)),
+                        subtitle: Text(student['email']),
+                        onTap: () => Navigator.pop(context, student),
+                      );
+                    },
+                  ),
           ),
         ],
       ),

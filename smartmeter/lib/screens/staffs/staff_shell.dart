@@ -470,6 +470,19 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
 class VerificationQueue extends StatelessWidget {
   const VerificationQueue({super.key});
 
+  /// Groups appliances by their ownerId to create a sectioned list.
+  Map<String, List<Appliance>> _groupByStudent(List<Appliance> list) {
+    final Map<String, List<Appliance>> groups = {};
+    for (var app in list) {
+      final ownerId = app.ownerId.isEmpty ? 'Unknown' : app.ownerId;
+      if (!groups.containsKey(ownerId)) {
+        groups[ownerId] = [];
+      }
+      groups[ownerId]!.add(app);
+    }
+    return groups;
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<ApplianceProvider>();
@@ -490,10 +503,82 @@ class VerificationQueue extends StatelessWidget {
       );
     }
 
+    final groupedData = _groupByStudent(pending);
+    final studentIds = groupedData.keys.toList();
+
     return ListView.builder(
       padding: const EdgeInsets.all(16),
-      itemCount: pending.length,
-      itemBuilder: (ctx, i) => _VerificationCard(app: pending[i]),
+      itemCount: studentIds.length,
+      itemBuilder: (ctx, index) {
+        final studentId = studentIds[index];
+        final studentApps = groupedData[studentId]!;
+
+        return Container(
+          margin: const EdgeInsets.only(bottom: 24),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+            borderRadius: BorderRadius.circular(12),
+            color: Colors.white,
+          ),
+          child: Column(
+            children: [
+              // Group Header
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.navyBlue.withValues(alpha: 0.05),
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                ),
+                child: Row(
+                  children: [
+                    const CircleAvatar(
+                      radius: 14,
+                      backgroundColor: AppTheme.navyBlue,
+                      child: Icon(Icons.person, size: 16, color: Colors.white),
+                    ),
+                    const SizedBox(width: 10),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text("Student Request", style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
+                        Text(
+                          studentId, 
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.navyBlue),
+                        ),
+                      ],
+                    ),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        "${studentApps.length} Pending",
+                        style: const TextStyle(fontSize: 11, color: Colors.deepOrange, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const Divider(height: 1, thickness: 1),
+
+              // Items List
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: studentApps.length,
+                padding: EdgeInsets.zero,
+                itemBuilder: (context, i) {
+                  return _VerificationCard(app: studentApps[i]);
+                },
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -511,7 +596,6 @@ class _VerificationCardState extends State<_VerificationCard> {
 
   Future<void> _handleAction(BuildContext context, bool isApprove) async {
     setState(() => _isProcessing = true);
-    
     final provider = context.read<ApplianceProvider>();
 
     try {
@@ -542,51 +626,75 @@ class _VerificationCardState extends State<_VerificationCard> {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(color: Colors.amber.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                  child: const Text("PENDING REVIEW", style: TextStyle(color: Colors.amber, fontSize: 10, fontWeight: FontWeight.bold)),
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: Colors.grey.withValues(alpha: 0.1))),
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40, height: 40,
+                decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(8)),
+                child: const Icon(Icons.electrical_services, color: Colors.grey),
+              ),
+              const SizedBox(width: 12),
+              
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(widget.app.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    Text(
+                      "${widget.app.type.toUpperCase()} • ${widget.app.wattage}W • ${widget.app.room ?? 'Unknown Room'}", 
+                      style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                    ),
+                  ],
                 ),
-                const Spacer(),
-                Text(widget.app.type.toUpperCase(), style: const TextStyle(color: Colors.grey, fontSize: 12)),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(widget.app.name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            Text("${widget.app.wattage} Watts • ${widget.app.room ?? 'Unknown Room'}", style: const TextStyle(color: Colors.grey)),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
+              ),
+            ],
+          ),
+          
+          const SizedBox(height: 12),
+          
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (_isProcessing) ...[
+                const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+              ] else ...[
                 TextButton(
-                  onPressed: _isProcessing ? null : () => _handleAction(context, false),
-                  child: const Text("REJECT", style: TextStyle(color: Colors.red)),
+                  onPressed: () => _handleAction(context, false),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text("Reject"),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 12),
                 ElevatedButton(
-                  onPressed: _isProcessing ? null : () => _handleAction(context, true),
+                  onPressed: () => _handleAction(context, true),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppTheme.ecoTeal,
-                    disabledBackgroundColor: AppTheme.ecoTeal.withValues(alpha: 0.5),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    minimumSize: const Size(0, 32),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
-                  child: _isProcessing
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                      : const Text("APPROVE"),
+                  child: const Text("Approve"),
                 ),
               ],
-            )
-          ],
-        ),
+            ],
+          )
+        ],
       ),
     );
   }

@@ -45,7 +45,6 @@ class AppRouter {
             builder: (context, state) => const StaffShell()
         ),
       ],
-
     );
   }
 }

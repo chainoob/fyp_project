@@ -32,7 +32,6 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passCtrl = TextEditingController();
   static const String _universityDomain = "@student.uthm.edu.my";
   static const String _staffDomain = "@uthm.edu.my";
-  
 
   Future<void> _setupGoogleSignIn() async {
     await _googleSignIn.initialize(
@@ -53,7 +52,7 @@ class _LoginScreenState extends State<LoginScreen> {
       final bool isExistingUser = await provider.googleLogin();
       final googleUser = provider.pendingGoogleUser;
 
-      final isStudent = googleUser?.email.endsWith(_universityDomain); // e.g. @student.uthm.edu.my
+      final isStudent = googleUser?.email.endsWith(_universityDomain); 
       final isStaff = googleUser?.email.endsWith(_staffDomain);
 
       if (!mounted) return;
