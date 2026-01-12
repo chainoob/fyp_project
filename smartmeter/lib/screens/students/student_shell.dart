@@ -6,7 +6,7 @@ import 'package:smartmeter/screens/students/analytics_screen.dart';
 import '../../config/theme.dart';
 import 'package:smartmeter/widgets/reusable_widget.dart';
 import '../shared/profile_screen.dart';
-import '../shared/appliances_screen.dart';
+import 'appliances_screen.dart';
 
 class StudentShell extends StatefulWidget {
   const StudentShell({super.key});

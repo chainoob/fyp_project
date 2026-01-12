@@ -191,6 +191,10 @@ class ApplianceProvider extends ChangeNotifier {
   Future<void> reject(String userId, String appId) async =>
       await _repo.updateApplianceStatus(userId, appId, 'rejected');
 
+  Future<String> getStudentName(String uid) async {
+      return _repo.getStudentDisplayId(uid); // Assuming your repo is stored in _repository
+  }
+
   @override
   void dispose() {
     _streamSub?.cancel();

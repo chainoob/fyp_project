@@ -20,6 +20,7 @@ abstract class EnergyRepository {
 
     Future<void> addAppliance(String userId, Appliance app);
     Future<void> updateApplianceStatus(String userId, String appId, String status);
+    Future<String> getStudentDisplayId(String uid);
     Future<void> triggerDisaggregation(String userId, String billId, double totalBill);
 
     Stream<Map<String, dynamic>> getStudentGoalStream(String uid);
@@ -171,6 +172,22 @@ abstract class EnergyRepository {
       });
 }
 
+@override
+  Future<String> getStudentDisplayId(String uid) async {
+    try {
+      final doc = await _db.collection('users').doc(uid).get();
+      
+      if (!doc.exists || doc.data() == null) {
+        return "Unknown User";
+      }
+
+      final data = doc.data() as Map<String, dynamic>;
+      return data['studentId'] ?? data['displayName'] ?? uid;
+    } catch (e) {
+      return "Error Loading ID";
+    }
+  }
+
   @override
   Future<void> addAppliance(String userId, Appliance app) async {
     await _db.collection('users').doc(userId).collection('appliances').add(app.toMap());
@@ -183,7 +200,7 @@ abstract class EnergyRepository {
       'verificationDate': status == 'active' ? FieldValue.serverTimestamp() : null,
     });
   }
-
+  
   @override
   Future<void> triggerDisaggregation(String userId, String billId, double totalBill) async {
     final url = Uri.parse('');

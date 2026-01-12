@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:smartmeter/controllers/provider.dart';
 import 'package:smartmeter/widgets/reusable_widget.dart';
 import 'package:smartmeter/config/theme.dart';
-import '../students/add_appliances_screen.dart';
+import 'add_appliances_screen.dart';
 
 class AppliancesScreen extends StatelessWidget {
   const AppliancesScreen({super.key});
