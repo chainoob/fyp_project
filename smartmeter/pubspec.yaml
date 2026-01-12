@@ -40,6 +40,7 @@ dependencies:
   image_picker: ^1.2.1
   http: ^1.6.0
   fl_chart: ^1.1.1
+  intl: ^0.20.2
 
 dev_dependencies:
   flutter_test:
@@ -54,6 +55,7 @@ dev_dependencies:
   build_runner: ^2.10.4
   firebase_core_platform_interface: ^6.0.2
   flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.7
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -101,7 +103,16 @@ flutter:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
-  image_path: "asset/images/smartmeter_logo_login.png"
+  image_path: "asset/images/smartmeter_login_logo.png"
   min_sdk_android: 21 
   adaptive_icon_background: "#ffffff" 
-  adaptive_icon_foreground: "asset/images/smartmeter_logo_login.png"
+  adaptive_icon_foreground: "asset/images/smartmeter_login_logo.png"
+
+flutter_native_splash:
+  color: "#ffffff"
+  image: "asset/images/smartmeter_logo.png" 
+  android_12: 
+    image: "asset/images/smartmeter_logo.png"
+    icon_background_color: "#ffffff"
+
+    fullscreen: true
