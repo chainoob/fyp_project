@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -27,6 +28,17 @@ abstract class EnergyRepository {
     Future<void> updateStudentGoal(String uid, double newGoal);
     Stream<Map<String, dynamic>> getCampusGoalStream();
     Future<void> updateCampusGoal(double newGoal);
+
+    Future<List<Map<String, dynamic>>> fetchBlocks();
+    Future<List<Map<String, dynamic>>> fetchUnits(String blockId);
+
+    Future<EnergyReportData> fetchEnergyReport({
+      required String scope,
+      required int month,
+      required int year,
+      String? blockId,
+      String? unitId,
+    });
   }
 
   class FirestoreRepository implements EnergyRepository {
@@ -255,5 +267,128 @@ abstract class EnergyRepository {
     {'monthlyGoal': newGoal}, 
     SetOptions(merge: true),
   );
+  }
+  
+  @override
+  Future<List<Map<String, dynamic>>> fetchBlocks() async {
+    try {
+      final snapshot = await _db.collection('blocks').orderBy('name').get();
+      return snapshot.docs.map((d) => {
+        'id': d.id,
+        'name': d['name'] ?? 'Unknown Block'
+      }).toList();
+    } catch (e) {
+      throw Exception("Failed to fetch blocks: $e");
+    }
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> fetchUnits(String blockId) async {
+    try {
+      final snapshot = await _db
+          .collection('blocks')
+          .doc(blockId)
+          .collection('units')
+          .orderBy('name')
+          .get();
+      return snapshot.docs.map((d) => {
+        'id': d.id,
+        'name': d['name'] ?? 'Unknown Unit'
+      }).toList();
+    } catch (e) {
+      throw Exception("Failed to fetch units: $e");
+    }
+  }
+
+  @override
+  Future<EnergyReportData> fetchEnergyReport({
+    required String scope,
+    required int month,
+    required int year,
+    String? blockId,
+    String? unitId,
+  }) async {
+    // =========================================================================
+    // TODO: IMPLEMENT REAL BACKEND CONNECTION (Future Update)
+    // =========================================================================
+    // According to System Docs Section 5.3, the AI Engine writes results to 
+    // the 'disaggregation_results' collection. You need to query that here.
+    
+    /*
+    try {
+      // 1. Construct Query
+      Query query = _db.collection('disaggregation_results')
+          .where('month', isEqualTo: month)
+          .where('year', isEqualTo: year);
+
+      // 2. Filter by Scope
+      if (scope == 'Block' && blockId != null) {
+        query = query.where('dormBlock', isEqualTo: blockId); 
+      } else if (scope == 'Unit' && unitId != null) {
+        query = query.where('userId', isEqualTo: unitId);
+      }
+
+      // 3. Fetch & Aggregate
+      final snapshot = await query.get();
+      if (snapshot.docs.isNotEmpty) {
+         // TODO: Loop through docs and sum up 'applianceBreakdown' map values
+         // TODO: Calculate total cost based on the real aggregated kWh
+         // return EnergyReportData(...); 
+      }
+    } catch (e) {
+      debugPrint("Error fetching real reports: $e");
+    }
+    */
+
+    // =========================================================================
+    // MOCK DATA (Active Placeholder)
+    // =========================================================================
+    // Keeps the UI working until the Python AI engine is connected.
+    
+    await Future.delayed(const Duration(seconds: 2));
+    final Random rng = Random();
+
+    // Mocking 'applianceBreakdown' from Doc Section 5.3
+    final breakdown = {
+      'Fan': 350.0 + rng.nextInt(100),
+      'Laptop': 150.0 + rng.nextInt(50),
+      'Charger': 50.0 + rng.nextInt(20),
+      'Lamp': 40.0 + rng.nextInt(20),
+      'Iron': 120.0 + rng.nextInt(80),   
+      'Kettle': 200.0 + rng.nextInt(100), 
+      'Printer': 10.0 + rng.nextInt(10),
+    };
+
+    double totalKwh = breakdown.values.reduce((a, b) => a + b);
+    
+    // Scale down if viewing a specific unit to make it realistic
+    if (scope == 'Unit') totalKwh /= 10; 
+
+    double totalCost = totalKwh * 0.218; // RM 0.218 tariff
+    
+    return EnergyReportData(
+      summary: ReportSummary(
+        totalConsumption: totalKwh,
+        comparisonPercent: 5.4, 
+        totalCost: totalCost,
+        keyIssue: "High usage detected in high-wattage appliances (Kettle/Iron).", 
+        recommendations: [
+          "Verify no prohibited appliances are in use.",
+          "Check iron/kettle usage policy enforcement.",
+        ],
+      ),
+      kpis: ReportKPIs(
+        totalKwh: totalKwh,
+        dailyAvgKwh: totalKwh / 30,
+        peakKwh: totalKwh / 30 * 2.5,
+        peakTime: "18:00 - 20:00", 
+        totalCost: totalCost,
+        changePercent: 5.4,
+      ),
+      usageTrend: List.generate(30, (i) => DailyUsagePoint(i + 1, (totalKwh/30) + rng.nextInt(10) - 5)),
+      applianceBreakdown: breakdown,
+      hourlyUsage: {for (var i = 0; i < 24; i++) i: (rng.nextDouble() * 5)},
+      costBreakdown: breakdown.map((k, v) => MapEntry(k, v * 0.218)),
+    );
   }
 }

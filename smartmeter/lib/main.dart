@@ -15,6 +15,7 @@ void main() async {
   final authProvider = AppAuthProvider(repository);
   final applianceProvider = ApplianceProvider(repository);
   final goalProvider = GoalProvider(repository);
+  final reportProvider = ReportProvider(repository);
 
   final GoRouter router = AppRouter.create(authProvider);
 
@@ -24,6 +25,7 @@ void main() async {
         ChangeNotifierProvider.value(value: authProvider),
         ChangeNotifierProvider.value(value: applianceProvider),
         ChangeNotifierProvider.value(value: goalProvider),
+        ChangeNotifierProvider.value(value: reportProvider),
       ],
       child: EnergyApp(router: router),
     ),

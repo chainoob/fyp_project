@@ -93,3 +93,62 @@ class Appliance {
     );
   }
 }
+
+// --- REPORTING MODELS ---
+class EnergyReportData {
+  final ReportSummary summary;
+  final ReportKPIs kpis;
+  final List<DailyUsagePoint> usageTrend;
+  final Map<String, double> applianceBreakdown;
+  final Map<int, double> hourlyUsage; // 0-23 hours
+  final Map<String, double> costBreakdown;
+
+  EnergyReportData({
+    required this.summary,
+    required this.kpis,
+    required this.usageTrend,
+    required this.applianceBreakdown,
+    required this.hourlyUsage,
+    required this.costBreakdown,
+  });
+}
+
+class ReportSummary {
+  final double totalConsumption;
+  final double comparisonPercent;
+  final double totalCost;
+  final String keyIssue;
+  final List<String> recommendations;
+
+  ReportSummary({
+    required this.totalConsumption,
+    required this.comparisonPercent,
+    required this.totalCost,
+    required this.keyIssue,
+    required this.recommendations,
+  });
+}
+
+class ReportKPIs {
+  final double totalKwh;
+  final double dailyAvgKwh;
+  final double peakKwh;
+  final String peakTime;
+  final double totalCost;
+  final double changePercent;
+
+  ReportKPIs({
+    required this.totalKwh,
+    required this.dailyAvgKwh,
+    required this.peakKwh,
+    required this.peakTime,
+    required this.totalCost,
+    required this.changePercent,
+  });
+}
+
+class DailyUsagePoint {
+  final int day;
+  final double value;
+  DailyUsagePoint(this.day, this.value);
+}

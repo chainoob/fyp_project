@@ -261,3 +261,79 @@ class GoalProvider with ChangeNotifier {
     super.dispose();
   }
 }
+
+class ReportProvider extends ChangeNotifier {
+  final EnergyRepository _repo;
+
+  // State
+  List<Map<String, dynamic>> _blocks = [];
+  List<Map<String, dynamic>> _units = [];
+  bool _isLoading = false;
+  
+  // Getters
+  List<Map<String, dynamic>> get blocks => _blocks;
+  List<Map<String, dynamic>> get units => _units;
+  bool get isLoading => _isLoading;
+
+  ReportProvider(this._repo);
+
+  Future<void> loadInitialData() async {
+    _isLoading = true;
+    notifyListeners();
+    try {
+      _blocks = await _repo.fetchBlocks();
+    } catch (e) {
+      debugPrint(e.toString());
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> loadUnitsForBlock(String blockId) async {
+    _isLoading = true;
+    notifyListeners();
+    try {
+      _units = await _repo.fetchUnits(blockId);
+    } catch (e) {
+      debugPrint(e.toString());
+      _units = [];
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  void clearUnits() {
+    _units = [];
+    notifyListeners();
+  }
+
+  Future<EnergyReportData?> generateReport({
+    required String scope,
+    required int month,
+    required int year,
+    String? blockId,
+    String? unitId,
+  }) async {
+    _isLoading = true;
+    notifyListeners();
+    
+    try {
+      final data = await _repo.fetchEnergyReport(
+        scope: scope, 
+        month: month, 
+        year: year,
+        blockId: blockId,
+        unitId: unitId
+      );
+      return data;
+    } catch (e) {
+      debugPrint("Report Generation Error: $e");
+      rethrow;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+}

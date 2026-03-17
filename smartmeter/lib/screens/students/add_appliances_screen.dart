@@ -27,33 +27,37 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
 
   final _nameCtrl = TextEditingController();
   final _wattCtrl = TextEditingController();
-  final _typeCtrl = TextEditingController();
-  final _roomCtrl = TextEditingController(); 
+  final _roomCtrl = TextEditingController();
+
+  String? _selectedType;
+
+  final List<String> _allowedTypes = [
+    'Fan',
+    'Laptop',
+    'Charger',
+    'Lamp',
+    'Iron',
+    'Kettle',
+    'Printer'
+  ];
 
   File? _image;
   bool _isProcessing = false;
   final ImagePicker _picker = ImagePicker();
 
-  final Map<String, int> _wattageDatabase = {
-
-  };
-
   @override
   void dispose() {
     _nameCtrl.dispose();
     _wattCtrl.dispose();
-    _typeCtrl.dispose();
     _roomCtrl.dispose();
     super.dispose();
   }
-
-  // --- LOGIC: CAMERA & AI ---
 
   Future<void> _pickImage() async {
     try {
       final XFile? pickedFile = await _picker.pickImage(
         source: ImageSource.camera,
-        maxWidth: 600, 
+        maxWidth: 600,
       );
 
       if (pickedFile != null) {
@@ -76,7 +80,7 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
   Future<void> _processImage(File image) async {
     // TODO: Connect this to your real 'ImageClassifier' service.
 
-    await Future.delayed(const Duration(seconds: 1)); 
+    await Future.delayed(const Duration(seconds: 1));
 
     final detectedLabel = "kettle";
 
@@ -84,25 +88,26 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
   }
 
   void _applyAiResults(String label) {
-    setState(() {
-      _typeCtrl.text = label; // Auto-fill Type
+    // Normalize to Title Case
+    String formattedLabel = label.isNotEmpty
+        ? label[0].toUpperCase() + label.substring(1).toLowerCase()
+        : '';
 
-      // Auto-fill Wattage if known
-      if (_wattageDatabase.containsKey(label.toLowerCase())) {
-        _wattCtrl.text = _wattageDatabase[label.toLowerCase()].toString();
-        _showSnackBar("AI Detected: $label (${_wattCtrl.text}W)", isError: false);
+    setState(() {
+      // Logic to enforce allowed types
+      if (_allowedTypes.contains(formattedLabel)) {
+        _selectedType = formattedLabel;
+        _showSnackBar("AI Detected: $formattedLabel", isError: false);
       } else {
-        _showSnackBar("AI Detected: $label (Wattage unknown)", isError: false);
+        _selectedType = null;
+        _showSnackBar("Detected '$formattedLabel' is prohibited in hostels.", isError: true);
       }
     });
   }
 
-  // --- LOGIC: SUBMISSION ---
-
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
 
-    // Dismiss keyboard
     FocusScope.of(context).unfocus();
 
     setState(() => _isProcessing = true);
@@ -110,7 +115,7 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
     try {
       await context.read<ApplianceProvider>().add(
         _nameCtrl.text.trim(),
-        _typeCtrl.text.isEmpty ? 'Other' : _typeCtrl.text.trim(),
+        _selectedType!, // Value guaranteed by validator
         int.parse(_wattCtrl.text.trim()),
         _roomCtrl.text.trim(),
       );
@@ -140,8 +145,6 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
     ));
   }
 
-  // --- UI CONSTRUCTION ---
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -153,29 +156,36 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Camera / Image Section
               _buildCameraArea(),
 
               const SizedBox(height: 24),
               const Text("Device Details", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
               const SizedBox(height: 16),
 
-              // Type Field (Auto-filled by AI)
-              TextFormField(
-                controller: _typeCtrl,
+              DropdownButtonFormField<String>(
+                initialValue: _selectedType,
+                items: _allowedTypes.map((type) => DropdownMenuItem(
+                  value: type,
+                  child: Text(type),
+                )).toList(),
+                onChanged: (val) {
+                  setState(() {
+                    _selectedType = val;
+                  });
+                },
                 decoration: InputDecoration(
                   labelText: "Appliance Type",
                   prefixIcon: const Icon(Icons.category_outlined),
-                  suffixIcon: _typeCtrl.text.isNotEmpty
-                      ? const Icon(Icons.auto_awesome, color: Colors.amber) // Indicator that AI filled this
+                  suffixIcon: _selectedType != null
+                      ? const Icon(Icons.check_circle, color: AppTheme.ecoTeal, size: 20)
                       : null,
-                  helperText: "Detect via camera or type manually",
+                  helperText: "Only approved hostel appliances allowed",
                 ),
-                validator: (v) => v!.isEmpty ? "Required" : null,
+                validator: (v) => v == null ? "Required: Item prohibited or not selected" : null,
               ),
+
               const SizedBox(height: 16),
 
-              // Name Field
               TextFormField(
                 controller: _nameCtrl,
                 decoration: const InputDecoration(
@@ -186,7 +196,6 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
               ),
               const SizedBox(height: 16),
 
-              // Wattage & Room Row
               Row(
                 children: [
                   Expanded(

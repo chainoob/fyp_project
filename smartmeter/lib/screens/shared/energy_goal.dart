@@ -90,7 +90,7 @@ class EnergyGoalCard extends StatelessWidget {
                 Expanded(
                   child: Row(
                     children: [
-                      Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      Text(title, style: const TextStyle(color: Colors.black, fontSize: 16, fontWeight: FontWeight.bold)),
                       // --- NEW: NOTIFICATION SYSTEM ---
                       if (isOver || isWarning) ...[
                         const SizedBox(width: 8),

@@ -632,7 +632,7 @@ class _StudentSearchSheetState extends State<_StudentSearchSheet> {
                 ? const Center(child: Text("No students found", style: TextStyle(color: Colors.grey))) 
                 : ListView.separated(
                     itemCount: _results.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    separatorBuilder: (_, _) => const Divider(height: 1),
                     itemBuilder: (context, index) {
                       final student = _results[index];
                       return ListTile(
