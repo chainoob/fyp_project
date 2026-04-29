@@ -1,6 +1,8 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import 'package:smartmeter/controllers/provider.dart';
 
 class AnalyticsScreen extends StatefulWidget {
   const AnalyticsScreen({super.key});
@@ -114,6 +116,12 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final energyData = Provider.of<EnergyProvider>(context).currentReport;
+
+    if (energyData == null) {
+      return const Center(child: CircularProgressIndicator(color: Color(0xFF00E5FF)));
+    }
+    
     return Scaffold(
       backgroundColor: _bgDark,
       appBar: AppBar(
@@ -140,13 +148,21 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
                   _buildSectionTitle("Usage Breakdown"),
                   const SizedBox(height: 12),
-                  _buildBreakdownCard(),
-                  const SizedBox(height: 24),
 
                   _buildSectionTitle("Forecast"),
                   const SizedBox(height: 12),
                   _buildForecastingCard(),
                   const SizedBox(height: 20),
+
+                  const SizedBox(height: 16),
+                  _buildBreakdownCard(
+                    energyData.summary.totalConsumption,
+                    energyData.applianceBreakdown.entries.toList(),
+                    energyData.summary.keyIssue,
+                  ),
+                  
+                  const SizedBox(height: 16),
+                  _buildHourlyTrendCard(energyData.hourlyUsage),
                 ],
               ),
             ),
@@ -247,69 +263,93 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   /// Builds the pie chart showing CMOEA appliance breakdown.
-  Widget _buildBreakdownCard() {
+  Widget _buildBreakdownCard(double totalConsumption, List<MapEntry<String, double>> entries, String keyIssue) {
+    if (entries.isEmpty || totalConsumption <= 0) {
+      return _buildEmptyState("No disaggregation data");
+    }
+
+    final List<Color> palette = [
+      const Color(0xFF00E5FF),
+      const Color(0xFF7C4DFF),
+      const Color(0xFF1DE9B6),
+      const Color(0xFFFF4081),
+      const Color(0xFFFFC400),
+    ];
+
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Colors.white12)),
-      color: _cardDark,
+      color: _cardDark, 
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            if (_applianceData.isEmpty)
-              _buildEmptyState("No disaggregation data")
-            else
-              Row(
-                children: [
-                  SizedBox(
-                    height: 120,
-                    width: 120,
-                    child: PieChart(
-                      PieChartData(
-                        pieTouchData: PieTouchData(
-                          touchCallback: (FlTouchEvent event, pieTouchResponse) {
-                            setState(() {
-                              if (!event.isInterestedForInteractions ||
-                                  pieTouchResponse == null ||
-                                  pieTouchResponse.touchedSection == null) {
-                                _touchedIndex = -1;
-                                return;
-                              }
-                              _touchedIndex = pieTouchResponse.touchedSection!.touchedSectionIndex;
-                            });
-                          },
-                        ),
-                        borderData: FlBorderData(show: false),
-                        sectionsSpace: 2,
-                        centerSpaceRadius: 30,
-                        sections: _showingSections(),
+            Row(
+              children: [
+                SizedBox(
+                  height: 120,
+                  width: 120,
+                  child: PieChart(
+                    PieChartData(
+                      borderData: FlBorderData(show: false),
+                      sectionsSpace: 2,
+                      centerSpaceRadius: 30,
+                      sections: entries.asMap().entries.map((e) {
+                        final index = e.key;
+                        final entry = e.value;
+                        final isTouched = index == _touchedIndex;
+                        final radius = isTouched ? 40.0 : 30.0;
+                        
+                        return PieChartSectionData(
+                          color: palette[index % palette.length],
+                          value: entry.value,
+                          title: '', 
+                          radius: radius,
+                        );
+                      }).toList(),
+                      pieTouchData: PieTouchData(
+                        touchCallback: (FlTouchEvent event, pieTouchResponse) {
+                          setState(() {
+                            if (!event.isInterestedForInteractions || 
+                                pieTouchResponse == null || 
+                                pieTouchResponse.touchedSection == null) {
+                              _touchedIndex = -1;
+                              return;
+                            }
+                            _touchedIndex = pieTouchResponse.touchedSection!.touchedSectionIndex;
+                          });
+                        },
                       ),
                     ),
                   ),
-                  const SizedBox(width: 24),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: _applianceData.map((data) {
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 8.0),
-                          child: _buildLegendItem(
-                            data['color'], 
-                            data['name'], 
-                            "${data['value'].toInt()}%"
-                          ),
-                        );
-                      }).toList(),
-                    ),
+                ),
+                const SizedBox(width: 24),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: entries.asMap().entries.map((e) {
+                      final index = e.key;
+                      final entry = e.value;
+                      final percentage = (entry.value / totalConsumption) * 100;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8.0),
+                        child: _buildLegendItem(
+                          palette[index % palette.length], 
+                          entry.key, 
+                          "${percentage.toStringAsFixed(1)}%"
+                        ),
+                      );
+                    }).toList(),
                   ),
-                ],
-              ),
+                ),
+              ],
+            ),
             const SizedBox(height: 16),
             const Divider(color: Colors.white12),
             Padding(
               padding: const EdgeInsets.only(top: 8.0),
               child: Text(
-                _analysisTip, // Using dynamic variable
+                keyIssue, 
                 style: TextStyle(fontSize: 12, color: _textSecondary, fontStyle: FontStyle.italic),
               ),
             ),
@@ -463,6 +503,89 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildHourlyTrendCard(Map<int, double> hourlyData) {
+    if (hourlyData.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    List<FlSpot> spots = [];
+    double maxY = 0;
+
+    hourlyData.forEach((hour, value) {
+      spots.add(FlSpot(hour.toDouble(), value));
+      if (value > maxY) maxY = value;
+    });
+
+    return Card(
+      color: const Color(0xFF1E1E1E),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "24h Synthetic Load Profile",
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              height: 200,
+              child: LineChart(
+                LineChartData(
+                  gridData: const FlGridData(show: false),
+                  titlesData: FlTitlesData(
+                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 22,
+                        interval: 6,
+                        getTitlesWidget: (value, meta) {
+                          return Text('${value.toInt()}:00', style: const TextStyle(color: Colors.white54, fontSize: 10));
+                        },
+                      ),
+                    ),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        interval: maxY > 0 ? (maxY / 4).ceilToDouble() : 1,
+                        reservedSize: 28,
+                        getTitlesWidget: (value, meta) {
+                          return Text(value.toStringAsFixed(1), style: const TextStyle(color: Colors.white54, fontSize: 10));
+                        },
+                      ),
+                    ),
+                  ),
+                  borderData: FlBorderData(show: false),
+                  minX: 0,
+                  maxX: 23,
+                  minY: 0,
+                  maxY: maxY * 1.2,
+                  lineBarsData: [
+                    LineChartBarData(
+                      spots: spots,
+                      isCurved: true,
+                      color: const Color(0xFF00E5FF),
+                      barWidth: 3,
+                      isStrokeCapRound: true,
+                      dotData: const FlDotData(show: false),
+                      belowBarData: BarAreaData(
+                        show: true,
+                        color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

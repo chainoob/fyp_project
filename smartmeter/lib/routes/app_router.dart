@@ -3,12 +3,14 @@ import 'package:smartmeter/controllers/provider.dart';
 import 'package:smartmeter/screens/register_screen.dart';
 import 'package:smartmeter/screens/students/student_shell.dart';
 import 'package:smartmeter/screens/staffs/staff_shell.dart';
+import 'package:smartmeter/screens/students/analytics_screen.dart';
 import 'package:smartmeter/utils/auth_wrapper.dart';
 
 class AppRoutes {
   static const register = '/register';
   static const studentHome = '/student';
   static const staffHome = '/staff';
+  static const analytics = '/analytics';
   static const root = '/'; 
 }
 
@@ -43,6 +45,11 @@ class AppRouter {
         GoRoute(
             path: AppRoutes.staffHome,
             builder: (context, state) => const StaffShell()
+        ),
+
+        GoRoute(
+            path: AppRoutes.analytics, 
+            builder: (context, state) => const AnalyticsScreen(),
         ),
       ],
     );

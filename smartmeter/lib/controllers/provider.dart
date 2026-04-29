@@ -29,7 +29,6 @@ class AppAuthProvider extends ChangeNotifier {
   bool get isStaff => _role == 'staff';
   bool get isLoading => _isLoading;
 
-  // --- 1. LOGIN (Standard) ---
   Future<void> login(String email, String password) async {
     _isLoading = true;
     notifyListeners();
@@ -43,8 +42,7 @@ class AppAuthProvider extends ChangeNotifier {
     }
   }
 
-  // --- 2. SIGN UP ---
- Future<void> completeGoogleProfile(Map<String, dynamic> additionalData) async {
+  Future<void> completeGoogleProfile(Map<String, dynamic> additionalData) async {
     _isLoading = true;
     notifyListeners();
 
@@ -64,8 +62,6 @@ class AppAuthProvider extends ChangeNotifier {
     }
   }
 
-  // --- 3. GOOGLE LOGIN (Interactive) ---
-
   Future<bool> googleLogin() async {
     try {
       final googleUser = await _repo.signInWithGoogle();
@@ -80,7 +76,6 @@ class AppAuthProvider extends ChangeNotifier {
     }
   }
 
-  // --- 4. FINALIZE GOOGLE (Logic) ---
   Future<bool> finalizeGoogleSignIn(GoogleSignInAccount googleUser) async {
     try {
       final bool userExists = await _repo.handleGoogleAuth(googleUser);
@@ -98,14 +93,12 @@ class AppAuthProvider extends ChangeNotifier {
     }
   }
 
-  // --- 5. LOGOUT (Consolidated) ---
   Future<void> signOut() async {
     await _repo.signOut();
     _role = null;
     notifyListeners();
   }
 
-  // --- 6. FETCH ROLE ---
   Future<void> fetchUserRole() async {
     if (_currentUser == null) return;
     try {
@@ -128,7 +121,6 @@ class AppAuthProvider extends ChangeNotifier {
         
         await user.linkWithCredential(credential);
       } on FirebaseAuthException catch (e) {
-        // Ignore if already linked, otherwise rethrow to UI
         if (e.code != 'provider-already-linked') {
           rethrow;
         }
@@ -163,12 +155,10 @@ class ApplianceProvider extends ChangeNotifier {
   }
 
   Future<void> add(String name, String type, int watts, String room) async {
-  
   final user = FirebaseAuth.instance.currentUser;
   if (user == null) throw Exception("User not logged in");
   
   final String safeUid = user.uid;
-
   const status = 'pending';
   
   final newAppliance = Appliance(
@@ -192,7 +182,7 @@ class ApplianceProvider extends ChangeNotifier {
       await _repo.updateApplianceStatus(userId, appId, 'rejected');
 
   Future<String> getStudentName(String uid) async {
-      return _repo.getStudentDisplayId(uid); // Assuming your repo is stored in _repository
+      return _repo.getStudentDisplayId(uid); 
   }
 
   @override
@@ -210,7 +200,6 @@ class GoalProvider with ChangeNotifier {
   double _target = 0;
   double _current = 0;
   
-  // State to track which mode we are in (for the 'setGoal' function)
   bool _isCampusMode = false; 
   String? _currentUserId;
 
@@ -220,7 +209,6 @@ class GoalProvider with ChangeNotifier {
   double get progress => _target > 0 ? (_current / _target).clamp(0.0, 1.0) : 0.0;
   bool get isOverBudget => _target > 0 && _current > _target;
 
-  // --- MODE A: STUDENT ---
   void subscribeToStudent(String uid) {
     _isCampusMode = false;
     _currentUserId = uid;
@@ -233,7 +221,6 @@ class GoalProvider with ChangeNotifier {
     });
   }
 
-  // --- MODE B: STAFF ---
   void subscribeToCampus() {
     _isCampusMode = true;
     _currentUserId = null;
@@ -246,7 +233,6 @@ class GoalProvider with ChangeNotifier {
     });
   }
 
-  // --- SHARED UPDATE LOGIC ---
   Future<void> setGoal(double newGoal) async {
     if (_isCampusMode) {
       await _repo.updateCampusGoal(newGoal);
@@ -265,12 +251,10 @@ class GoalProvider with ChangeNotifier {
 class ReportProvider extends ChangeNotifier {
   final EnergyRepository _repo;
 
-  // State
   List<Map<String, dynamic>> _blocks = [];
   List<Map<String, dynamic>> _units = [];
   bool _isLoading = false;
   
-  // Getters
   List<Map<String, dynamic>> get blocks => _blocks;
   List<Map<String, dynamic>> get units => _units;
   bool get isLoading => _isLoading;
@@ -333,6 +317,71 @@ class ReportProvider extends ChangeNotifier {
       rethrow;
     } finally {
       _isLoading = false;
+      notifyListeners();
+    }
+  }
+}
+
+class EnergyProvider extends ChangeNotifier {
+  final EnergyRepository _repository;
+
+  EnergyReportData? currentReport;
+  bool isLoading = true;
+  bool isProcessingAI = false;
+  String? errorMessage;
+
+  EnergyProvider(this._repository);
+
+  // Read Pipeline
+  Future<void> loadReport({
+    required String scope,
+    required int month,
+    required int year,
+    String? blockId,
+    String? unitId,
+  }) async {
+    isLoading = true;
+    errorMessage = null;
+    notifyListeners();
+
+    try {
+      currentReport = await _repository.fetchEnergyReport(
+        scope: scope,
+        month: month,
+        year: year,
+        blockId: blockId,
+        unitId: unitId,
+      );
+    } catch (e) {
+      errorMessage = e.toString();
+      currentReport = null;
+    } finally {
+      isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  // Write/Trigger Pipeline
+  Future<void> runDisaggregation(String userId, String billId, double totalBill, {
+    required String scope,
+    required int month,
+    required int year,
+  }) async {
+    isProcessingAI = true;
+    errorMessage = null;
+    notifyListeners();
+
+    try {
+      await _repository.triggerDisaggregation(userId, billId, totalBill);
+      
+      // Await database write propagation, then reload UI data automatically
+      await Future.delayed(const Duration(seconds: 2));
+      await loadReport(scope: scope, month: month, year: year, unitId: userId);
+      
+    } catch (e) {
+      errorMessage = "AI Execution Failed: $e";
+    } finally {
+      isProcessingAI = false;
       notifyListeners();
     }
   }
