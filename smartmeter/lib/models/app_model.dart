@@ -55,55 +55,44 @@ class Users {
 // --- APPLIANCE MODEL ---
 class Appliance {
   final String id;
-  final String ownerId;
   final String name;
-  final String type;
-  final int wattage;
+  final double wattage;
+  final double probDay;
+  final double probNight;
+  final double maxDurationHr;
   final String status;
-  final String? room;
-  final DateTime? verificationDate;
 
-  const Appliance({
+  Appliance({
     required this.id,
-    required this.ownerId,
     required this.name,
-    required this.type,
     required this.wattage,
-    this.status = 'pending',
-    this.room,
-    this.verificationDate,
+    required this.probDay,
+    required this.probNight,
+    required this.maxDurationHr,
+    required this.status
   });
 
   Map<String, dynamic> toMap() {
+    // Maps object to Firestore document format.
     return {
-      'ownerId': ownerId,
       'name': name,
-      'type': type,
       'wattage': wattage,
-      'status': status,
-      'room': room,
-      'verificationDate': verificationDate != null ? Timestamp.fromDate(verificationDate!) : null,
-      'createdAt': FieldValue.serverTimestamp(),
+      'prob_day': probDay,
+      'prob_night': probNight,
+      'max_duration_hr': maxDurationHr,
     };
   }
 
-  factory Appliance.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
-
-    String resolvedOwnerId = data['ownerId'] ?? '';
-    if (resolvedOwnerId.isEmpty && doc.reference.parent.parent != null) {
-      resolvedOwnerId = doc.reference.parent.parent!.id;
-    }
-
+  factory Appliance.fromFirestore(String id, Map<String, dynamic> data) {
+    // Reconstructs object from Firestore document data.
     return Appliance(
-      id: doc.id,
-      ownerId: resolvedOwnerId,
-      name: data['name'] ?? 'Unknown Device',
-      type: data['type'] ?? 'other',
-      wattage: data['wattage'] ?? 0,
-      status: data['status'] ?? 'pending',
-      room: data['room'],
-      verificationDate: (data['verificationDate'] as Timestamp?)?.toDate(),
+      id: id,
+      name: data['name'] ?? '',
+      wattage: (data['wattage'] as num?)?.toDouble() ?? 0.0,
+      probDay: (data['prob_day'] as num?)?.toDouble() ?? 0.1,
+      probNight: (data['prob_night'] as num?)?.toDouble() ?? 0.1,
+      maxDurationHr: (data['max_duration_hr'] as num?)?.toDouble() ?? 1.0,
+      status: data['status'] ?? '',
     );
   }
 }

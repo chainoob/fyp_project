@@ -25,20 +25,41 @@ class _BillSubmissionCardState extends State<BillSubmissionCard> {
     super.dispose();
   }
 
-  void _submitBill() {
+  void _submitBill() async {
     final double? billTotal = double.tryParse(_billController.text);
     if (billTotal == null || billTotal <= 0) return;
 
     FocusScope.of(context).unfocus();
     
-    context.read<EnergyProvider>().runDisaggregation(
-      widget.userId,
-      DateTime.now().millisecondsSinceEpoch.toString(), // Generates unique billId
-      billTotal,
-      scope: 'Unit',
-      month: DateTime.now().month,
-      year: DateTime.now().year,
-    );
+    try {
+      await context.read<EnergyProvider>().runDisaggregation(
+        widget.userId,
+        DateTime.now().millisecondsSinceEpoch.toString(), 
+        billTotal,
+        scope: 'Unit',
+        month: DateTime.now().month,
+        year: DateTime.now().year,
+      );
+
+      if (mounted) {
+        _billController.clear();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("AI Analysis Complete. Data broadcasted to students."),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Submission Failed: $e"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   @override

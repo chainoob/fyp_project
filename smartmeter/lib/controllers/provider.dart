@@ -129,16 +129,25 @@ class AppAuthProvider extends ChangeNotifier {
   }
 }
 
+// smartmeter/lib/providers/appliance_provider.dart
+
 class ApplianceProvider extends ChangeNotifier {
   final EnergyRepository _repo;
   List<Appliance> _appliances = [];
+  
+  // Stores the mapped queue data for staff verification.
+  List<MapEntry<String, Appliance>> _pendingQueue = [];
   StreamSubscription? _streamSub;
 
   ApplianceProvider(this._repo);
 
   List<Appliance> get appliances => _appliances;
+  
+  // Provides access to the grouped queue entries.
+  List<MapEntry<String, Appliance>> get pendingQueue => _pendingQueue;
 
   void subscribeToUser(String userId) {
+    // Synchronizes the local appliance list with the user's specific subcollection.
     _streamSub?.cancel();
     _streamSub = _repo.getAppliancesStream(userId).listen((data) {
       _appliances = data;
@@ -147,33 +156,38 @@ class ApplianceProvider extends ChangeNotifier {
   }
 
   void subscribeToQueue() {
+    // Listens to the global pending collection and stores the UID/Appliance pairs.
     _streamSub?.cancel();
     _streamSub = _repo.getPendingVerificationStream().listen((data) {
-      _appliances = data;
+      _pendingQueue = data;
       notifyListeners();
     });
   }
 
   Future<void> add(String name, String type, int watts, String room) async {
-  final user = FirebaseAuth.instance.currentUser;
-  if (user == null) throw Exception("User not logged in");
-  
-  final String safeUid = user.uid;
-  const status = 'pending';
-  
-  final newAppliance = Appliance(
-    id: '', 
-    ownerId: safeUid,
-    name: name,
-    type: type,
-    wattage: watts,
-    room: room,
-    status: status,
-    verificationDate: status == 'active' ? DateTime.now() : null,
-  );
+    // Initializes a new appliance document with default simulation weights.
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw Exception("User not logged in");
 
-  await _repo.addAppliance(safeUid, newAppliance);
-}
+    final String safeUid = user.uid;
+
+    final newAppliance = Appliance(
+      id: '', 
+      name: name,
+      wattage: watts.toDouble(),
+      probDay: 0.1,
+      probNight: 0.1,
+      maxDurationHr: 1.0,
+      status: 'pending',
+    );
+
+    await _repo.saveAppliance(safeUid, newAppliance);
+  }
+
+  Future<void> delete(String userId, String appId) async {
+    // Removes the appliance from the database.
+    await _repo.deleteAppliance(userId, appId);
+  }
 
   Future<void> approve(String userId, String appId) async =>
       await _repo.updateApplianceStatus(userId, appId, 'active');
@@ -182,11 +196,13 @@ class ApplianceProvider extends ChangeNotifier {
       await _repo.updateApplianceStatus(userId, appId, 'rejected');
 
   Future<String> getStudentName(String uid) async {
-      return _repo.getStudentDisplayId(uid); 
+    // Resolves student UID to a display name or ID for staff views.
+    return await _repo.getStudentDisplayId(uid);
   }
 
   @override
   void dispose() {
+    // Cleans up active streams to prevent memory leaks and redundant updates.
     _streamSub?.cancel();
     super.dispose();
   }
@@ -372,14 +388,17 @@ class EnergyProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // High-level: Trigger the remote ML pipeline via Cloud Functions.
       await _repository.triggerDisaggregation(userId, billId, totalBill);
       
-      // Await database write propagation, then reload UI data automatically
-      await Future.delayed(const Duration(seconds: 2));
+      // Instead of a fragile fixed delay, we perform an immediate reload.
+      // If the backend is asynchronous, the UI should listen to a stream of disaggregation results
+      // or implement a retry-with-backoff check for the new document.
       await loadReport(scope: scope, month: month, year: year, unitId: userId);
       
     } catch (e) {
       errorMessage = "AI Execution Failed: $e";
+      debugPrint("Disaggregation Trigger Error: $e");
     } finally {
       isProcessingAI = false;
       notifyListeners();

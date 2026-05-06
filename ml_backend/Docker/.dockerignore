@@ -1,0 +1,21 @@
+# Exclude Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Exclude local environment and secrets
+.env
+serviceAccountKey.json
+.git/
+
+# Exclude large datasets
+data/raw/
+data/processed/
+*.zip
+*.parquet
+*.h5
+
+# Exclude documentation and local tests
+tests/
+README.md

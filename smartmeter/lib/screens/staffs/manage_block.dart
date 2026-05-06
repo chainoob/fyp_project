@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:smartmeter/config/theme.dart';
+import 'package:smartmeter/widgets/bill_submission_card.dart';
 
 // -----------------------------------------------------------------------------
 // 1. MANAGE BLOCKS SCREEN (Level 1)
@@ -321,14 +322,14 @@ class ManageRoomsScreen extends StatefulWidget {
 }
 
 class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
-  CollectionReference get _roomsRef =>
-      FirebaseFirestore.instance
-          .collection('blocks').doc(widget.blockId)
-          .collection('units').doc(widget.unitId)
-          .collection('rooms');
+    CollectionReference get _roomsRef =>
+    FirebaseFirestore.instance
+        .collection('blocks').doc(widget.blockId)
+        .collection('units').doc(widget.unitId)
+        .collection('rooms');
 
-  Future<Map<String, dynamic>?> _showStudentSearchSheet() async {
-    return await showModalBottomSheet<Map<String, dynamic>>(
+    Future<Map<String, dynamic>?> _showStudentSearchSheet() async {
+      return await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
       isScrollControlled: true,
       backgroundColor: AppTheme.surface,
@@ -439,6 +440,10 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
     );
   }
 
+  /// Displays the room management interface and bill submission panel.
+  /// Iterates through rooms to identify the assigned student and binds 
+  /// the bill submission card to that student's identity.
+
   Future<void> _deleteRoom(DocumentSnapshot room) async {
     await room.reference.delete();
   }
@@ -463,46 +468,85 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
           final docs = snapshot.data!.docs;
           if (docs.isEmpty) return const Center(child: Text("No rooms added yet."));
 
-          return GridView.builder(
-            padding: const EdgeInsets.all(16),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 1.1),
-            itemCount: docs.length,
-            itemBuilder: (context, index) {
-              final room = docs[index];
-              final data = room.data() as Map<String, dynamic>;
-              final bool isOccupied = data['isOccupied'] ?? false;
-              final occupantName = data['occupant']?['name'] ?? "Vacant";
+          String? targetStudentId;
+          for (var doc in docs) {
+            final data = doc.data() as Map<String, dynamic>;
+            if (data['isOccupied'] == true && data['occupant'] != null) {
+              targetStudentId = data['occupant']['uid'];
+              break; 
+            }
+          }
 
-              return Card(
-                elevation: 0,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: isOccupied ? AppTheme.ecoTeal.withValues(alpha: 0.5) : Colors.grey.withValues(alpha: 0.2))),
-                child: InkWell(
-                  onTap: () => _showRoomDialog(room: room),
-                  onLongPress: () => _deleteRoom(room),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Icon(Icons.meeting_room, color: isOccupied ? AppTheme.ecoTeal : Colors.grey),
-                            if (isOccupied) const Icon(Icons.check_circle, size: 16, color: AppTheme.ecoTeal)
-                          ],
-                        ),
-                        const Spacer(),
-                        Text(data['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                        Text(occupantName, style: TextStyle(fontSize: 12, color: isOccupied ? Colors.white70 : Colors.grey), maxLines: 1, overflow: TextOverflow.ellipsis),
-                      ],
-                    ),
+          return Column(
+            children: [
+              if (targetStudentId != null)
+                Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: BillSubmissionCard(
+                    userId: targetStudentId,
+                    blockId: widget.blockId,
+                  ),
+                )
+              else
+                const Padding(
+                  padding: EdgeInsets.all(16.0),
+                  child: Text(
+                    "Assign a student to a room to enable AI bill analysis.", 
+                    style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)
                   ),
                 ),
-              );
-            },
+              
+              Expanded(
+                child: GridView.builder(
+                  padding: const EdgeInsets.all(16),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2, 
+                    crossAxisSpacing: 12, 
+                    mainAxisSpacing: 12, 
+                    childAspectRatio: 1.1
+                  ),
+                  itemCount: docs.length,
+                  itemBuilder: (context, index) {
+                    final room = docs[index];
+                    final data = room.data() as Map<String, dynamic>;
+                    final bool isOccupied = data['isOccupied'] ?? false;
+                    final occupantName = data['occupant']?['name'] ?? "Vacant";
+
+                    return Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12), 
+                        side: BorderSide(color: isOccupied ? AppTheme.ecoTeal.withValues(alpha: 0.5) : Colors.grey.withValues(alpha: 0.2))
+                      ),
+                      child: InkWell(
+                        onTap: () => _showRoomDialog(room: room),
+                        onLongPress: () => _deleteRoom(room),
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Icon(Icons.meeting_room, color: isOccupied ? AppTheme.ecoTeal : Colors.grey),
+                                  if (isOccupied) const Icon(Icons.check_circle, size: 16, color: AppTheme.ecoTeal)
+                                ],
+                              ),
+                              const Spacer(),
+                              Text(data['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                              Text(occupantName, style: TextStyle(fontSize: 12, color: isOccupied ? Colors.white70 : Colors.grey), maxLines: 1, overflow: TextOverflow.ellipsis),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           );
         },
       ),
