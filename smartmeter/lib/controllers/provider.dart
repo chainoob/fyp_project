@@ -5,6 +5,8 @@ import 'package:smartmeter/models/app_model.dart';
 import 'package:smartmeter/services/energy_repo.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import 'package:smartmeter/utils/logger.dart';
+
 class AppAuthProvider extends ChangeNotifier {
   final EnergyRepository _repo;
 
@@ -164,25 +166,39 @@ class ApplianceProvider extends ChangeNotifier {
     });
   }
 
-  Future<void> add(String name, String type, int watts, String room) async {
-    // Initializes a new appliance document with default simulation weights.
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) throw Exception("User not logged in");
+Future<void> add(String name, String type, int watts, String room) async {
+  // High-level: Auth check using your existing internal logic.
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null) throw Exception("User not logged in");
 
-    final String safeUid = user.uid;
+  final String safeUid = user.uid;
 
-    final newAppliance = Appliance(
-      id: '', 
-      name: name,
-      wattage: watts.toDouble(),
-      probDay: 0.1,
-      probNight: 0.1,
-      maxDurationHr: 1.0,
-      status: 'pending',
-    );
+  // Developer Expectation: Calculate HMM profile locally to avoid backend bootstrap errors.
+  final List<double> calculatedStates = (type == 'Fan') 
+      ? [0.0, watts * 0.6, watts.toDouble()] 
+      : [0.0, watts.toDouble()];
+      
+  final int calculatedMaxIndex = calculatedStates.length - 1;
 
-    await _repo.saveAppliance(safeUid, newAppliance);
-  }
+  final newAppliance = Appliance(
+    id: '', 
+    name: name,
+    type: type,           
+    location: room,       
+    wattage: watts.toDouble(),
+    probDay: 0.1,
+    probNight: 0.1,
+    maxDurationHr: 1.0,
+    status: 'pending',     
+    states: calculatedStates,
+    maxStateIndex: calculatedMaxIndex,
+  );
+
+  // High-level: Persist via your existing repository pattern.
+  await _repo.saveAppliance(safeUid, newAppliance);
+  
+  notifyListeners();
+}
 
   Future<void> delete(String userId, String appId) async {
     // Removes the appliance from the database.
@@ -388,17 +404,23 @@ class EnergyProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // High-level: Trigger the remote ML pipeline via Cloud Functions.
-      await _repository.triggerDisaggregation(userId, billId, totalBill);
+      // High-level: Construct the context map to match the Repository and Cloud Function contract.
+      final context = {
+        'billId': billId,
+        'totalBill': totalBill,
+        'month': month.toString(),
+        'year': year,
+        'scope': scope,
+        'trainModel': false, 
+      };
+
+      // Developer Expectation: This calls the Firebase 'onCall' function.
+      await _repository.triggerDisaggregation(userId, context);
+    
       
-      // Instead of a fragile fixed delay, we perform an immediate reload.
-      // If the backend is asynchronous, the UI should listen to a stream of disaggregation results
-      // or implement a retry-with-backoff check for the new document.
-      await loadReport(scope: scope, month: month, year: year, unitId: userId);
-      
-    } catch (e) {
-      errorMessage = "AI Execution Failed: $e";
-      debugPrint("Disaggregation Trigger Error: $e");
+    } catch (e, stack) {
+      errorMessage = "AI Execution Failed: See logs for details.";
+      AppLog.error("Disaggregation Trigger", e, stack);
     } finally {
       isProcessingAI = false;
       notifyListeners();

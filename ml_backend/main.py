@@ -1,12 +1,13 @@
 import logging
 import datetime
 from fastapi import FastAPI, HTTPException, Request
-from models.request_model import FeedbackRequest, OptimizationRequest, SyncRequest, DisaggregationRequest
+from models.request_models import FeedbackRequest, OptimizationRequest, SyncRequest, DisaggregationRequest
 from services.firebase_client import FirebaseClient
 from services.simulator import AdaptiveBehavioralSimulator
 from services.optimizer import EnergyOptimizer
 from services.fhmm_service import FHMMService
 from utils.response_formatter import format_api_response
+import traceback
 
 # Initialize logging for backend observability.
 logging.basicConfig(level=logging.INFO)
@@ -14,16 +15,22 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SmartMeter ML Backend")
 
-# High-level: Service singleton instances for pipeline orchestration.
+# Service singleton instances for pipeline orchestration.
 db = FirebaseClient()
 simulator = AdaptiveBehavioralSimulator()
 optimizer = EnergyOptimizer()
 fhmm = FHMMService()
 
+# Global exception handler for consistent error reporting across all endpoints.
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled Global Error: {str(exc)}", exc_info=True)
     return format_api_response(False, message="An internal server error occurred.")
+
+@app.get("/")
+async def root():
+    # Service availability check for root path resolution.
+    return {"status": "online", "message": "ML Backend Active"}
 
 @app.post("/api/v1/optimize")
 async def run_optimization(request: OptimizationRequest):
@@ -36,7 +43,7 @@ async def run_optimization(request: OptimizationRequest):
             
         new_weights = optimizer.refine(appliances, request.actual_bill)
         
-        # Expected: Update Firestore with optimized prob_day/prob_night values.
+        # Developer Expectation: Update Firestore with optimized prob_day/prob_night values.
         db.update_appliance_weights(request.user_id, appliances, new_weights)
         return format_api_response(True, message="Weights optimized successfully")
     except ValueError as e:
@@ -47,50 +54,65 @@ async def run_optimization(request: OptimizationRequest):
 
 @app.post("/api/v1/disaggregate")
 async def process_telemetry(request: DisaggregationRequest):
-    # Executes simulation and derives appliance breakdown from results.
+    # Executes disaggregation pipeline and persists results to Firestore.
     try:
-        user_id = request.user_id # Corrected attribute access
+        user_id = request.user_id
         logger.info(f"Running disaggregation for user: {user_id}")
         
+        # Validation for user appliance data existence in Firestore.
         registered_appliances = db.get_user_appliances(user_id) 
-        
-        # Injected default context if missing in request to ensure simulation stability.
+        if not registered_appliances:
+            logger.warning(f"Aborting: No active appliances for user {user_id}")
+            return format_api_response(False, message="No active appliances found. Add appliances to proceed.")
+
+        # TODO: Replace static context with dynamic data (Weather API/System Clock) for production.
+        # This is currently a testing placeholder to ensure simulator stability.
         context = {
             "temperature": 28,
             "is_weekend": False,
             "poll_iron_used_today": False
         }
         
-        # Returns structured simulation data containing hourly load and appliance-specific totals.
         simulation_results = simulator.run_monte_carlo(registered_appliances, context)
         
-        # Map simulator output to Firestore-compatible string keys.
+        # Guard clause for simulator dictionary key integrity to prevent KeyError.
+        if 'hourly_profile' not in simulation_results or 'appliance_totals' not in simulation_results:
+            logger.error(f"Simulator output missing keys for {user_id}: {simulation_results}")
+            raise KeyError("Simulator failed to return 'hourly_profile' or 'appliance_totals'.")
+        
         safe_hourly_usage = {str(k): float(v) for k, v in simulation_results['hourly_profile'].items()}
         dynamic_breakdown = {name: float(val) for name, val in simulation_results['appliance_totals'].items()}
 
         now = datetime.datetime.now(datetime.timezone.utc)
-        parsed_year, parsed_month = now.year, now.month
-
         payload = {
             "userId": user_id, 
-            "month": parsed_month,
-            "year": parsed_year,
+            "month": now.month,
+            "year": now.year,
             "estimated_load": sum(dynamic_breakdown.values()),
             "breakdown": dynamic_breakdown,
             "recommendations": generate_recommendations(dynamic_breakdown),
             "hourlyUsage": safe_hourly_usage,
-            "timestamp": datetime.datetime.now(datetime.timezone.utc) 
+            "timestamp": now 
         }
         
         db.save_disaggregation_result(payload)
         return format_api_response(True, data=payload)
     except Exception as e:
-        logger.error(f"Disaggregation failed: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal disaggregation error.")
+        error_stack = traceback.format_exc()
+        logger.error(f"Disaggregation failed: {error_stack}")
+    
+        # Return the trace in the HTTP response for immediate viewing
+        raise HTTPException(
+            status_code=500, 
+            detail={
+                "error": str(e),
+                "traceback": error_stack
+            }
+        )
 
 @app.post("/api/v1/sync-daily")
 async def sync_daily_usage(request: SyncRequest):
-    # Expected: Generate and persist high-fidelity 24-hour time-series data.
+    # Generates and persists high-fidelity 24-hour time-series data.
     try:
         appliances = db.get_user_appliances(request.user_id)
         results = simulator.run_monte_carlo(appliances, request.context)
@@ -102,7 +124,7 @@ async def sync_daily_usage(request: SyncRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 def generate_recommendations(breakdown: dict) -> list:
-    # Generates advice by comparing appliance usage against dynamic thresholds.
+    # Generates advice by comparing appliance usage against thresholds.
     advice = []
     total = sum(breakdown.values())
     if total == 0: return ["No usage detected."]
@@ -110,7 +132,7 @@ def generate_recommendations(breakdown: dict) -> list:
     for app, val in breakdown.items():
         percentage = (val / total) * 100
         if percentage > 40:
-            advice.append(f"High Consumption: {app} accounts for {percentage:.1f}% of usage. Check efficiency settings.")
+            advice.append(f"High Consumption: {app} accounts for {percentage:.1f}% of usage.")
             
     if not advice:
         advice.append("Usage patterns are within optimal ranges.")
@@ -118,30 +140,21 @@ def generate_recommendations(breakdown: dict) -> list:
 
 @app.post("/api/v1/feedback")
 async def handle_feedback(request: FeedbackRequest):
-    # High-level: Processes corrections and applies a reinforcement learning nudge.
+    # Processes corrections and applies reinforcement learning adjustments.
     try:
-        # 1. Record the event for future training sessions.
         db.log_feedback(request)
-
-        # 2. Get current state to calculate the adjustment.
         user_apps = db.get_user_appliances(request.user_id)
         app_data = user_apps.get(request.appliance_name)
 
-        if app_data:
-            # 3. Calculate the new probability based on the error.
-            # If AI guessed 'ON' (True) but student was 'OFF' (False), it's a False Positive.
-            is_false_positive = (request.predicted_state and not request.actual_state)
-            
-            # Developer Expectation: Use a 5% shift as the default learning rate.
-            learning_rate = 0.05
-            current_p = app_data.get('prob_day', 0.5)
-            
-            if is_false_positive:
-                new_p = max(0.01, current_p - learning_rate)
-            else:
-                new_p = min(0.99, current_p + learning_rate)
+        if not app_data:
+            return {"status": "error", "message": f"Appliance '{request.appliance_name}' not found."}
 
-            db.update_single_appliance_prob(request.user_id, request.appliance_name, new_p)
+        is_false_positive = (request.predicted_state and not request.actual_state)
+        learning_rate = 0.05
+        current_p = app_data.get('prob_day', 0.5)
+        
+        new_p = max(0.01, current_p - learning_rate) if is_false_positive else min(0.99, current_p + learning_rate)
+        db.update_single_appliance_prob(request.user_id, request.appliance_name, new_p)
 
         return {"status": "success", "new_probability": new_p}
     except Exception as e:

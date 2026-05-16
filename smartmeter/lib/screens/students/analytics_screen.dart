@@ -23,8 +23,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   final Color _textSecondary = Colors.white54;        
   
   // --- CHART COLORS ---
-  final Color _cCyan = const Color(0xFF00E5FF);       
-  final Color _cPurple = const Color(0xFFD500F9);     
+  final Color _cCyan = const Color(0xFF00E5FF);         
 
   @override
   void initState() {

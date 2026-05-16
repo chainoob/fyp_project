@@ -11,7 +11,7 @@ class VerificationScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Aggregates and groups pending appliances by owner identity.
+    // High-level: Rebuild the view layout dynamically whenever the baseline application state mutates.
     final provider = context.watch<ApplianceProvider>();
     final pendingEntries = provider.pendingQueue;
 
@@ -32,6 +32,7 @@ class VerificationScreen extends StatelessWidget {
       itemBuilder: (ctx, index) {
         final uid = ownerIds[index];
         return _StudentGroupCard(
+          key: ValueKey(uid), // Developer Expectation: Maintain independent state contexts per identifier during UI updates.
           uid: uid, 
           studentApps: groupedData[uid]!,
         );
@@ -44,7 +45,7 @@ class _StudentGroupCard extends StatefulWidget {
   final String uid;
   final List<Appliance> studentApps;
 
-  const _StudentGroupCard({required this.uid, required this.studentApps});
+  const _StudentGroupCard({super.key, required this.uid, required this.studentApps});
 
   @override
   State<_StudentGroupCard> createState() => _StudentGroupCardState();
@@ -55,11 +56,11 @@ class _StudentGroupCardState extends State<_StudentGroupCard> {
 
   @override
   Widget build(BuildContext context) {
-    // Manages expansion state for student-specific appliance collections.
+    // High-level: Isolate expansion mechanics inside specified student groupings.
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey.withOpacity(0.2)),
+        border: Border.all(color: Colors.grey.withValues(alpha: .2)),
         borderRadius: BorderRadius.circular(12),
         color: Colors.white,
       ),
@@ -74,6 +75,7 @@ class _StudentGroupCardState extends State<_StudentGroupCard> {
           if (_isExpanded) ...[
             const Divider(height: 1),
             ...widget.studentApps.map((app) => _ApplianceActionTile(
+              key: ValueKey(app.id), // Developer Expectation: Ensure correct list row extraction upon queue mutations.
               app: app, 
               userId: widget.uid,
             )),
@@ -88,7 +90,7 @@ class _ApplianceActionTile extends StatefulWidget {
   final Appliance app;
   final String userId;
 
-  const _ApplianceActionTile({required this.app, required this.userId});
+  const _ApplianceActionTile({super.key, required this.app, required this.userId});
 
   @override
   State<_ApplianceActionTile> createState() => _ApplianceActionTileState();
@@ -98,7 +100,7 @@ class _ApplianceActionTileState extends State<_ApplianceActionTile> {
   bool _isProcessing = false;
 
   Future<void> _handleAction(BuildContext context, bool isApprove) async {
-    // Dispatches status updates to the provider and manages UI feedback.
+    // High-level: Execute network transaction requests and handle baseline context verification.
     if (_isProcessing) return;
 
     setState(() => _isProcessing = true);
@@ -114,26 +116,29 @@ class _ApplianceActionTileState extends State<_ApplianceActionTile> {
       if (!mounted) return;
       setState(() => _isProcessing = false);
 
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(isApprove ? "Device Approved" : "Application Rejected"),
-        backgroundColor: isApprove ? AppTheme.ecoTeal : Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ));
-      
+      if(context.mounted){
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(isApprove ? "Device Approved" : "Application Rejected"),
+          backgroundColor: isApprove ? AppTheme.ecoTeal : Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() => _isProcessing = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
+      if (context.mounted){
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // Renders individual appliance details and execution controls.
+    // High-level: Process layout attributes for discrete database entities.
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: Colors.grey.withOpacity(0.1))),
+        border: Border(bottom: BorderSide(color: Colors.grey.withValues(alpha: .1))),
       ),
       child: Row(
         children: [
@@ -184,12 +189,12 @@ class _GroupHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Displays student identity and expansion toggle.
+    // High-level: Handle rendering sequence for consumer metadata headers.
     return InkWell(
       onTap: onToggle,
       child: Container(
         padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(color: AppTheme.navyBlue.withOpacity(0.05)),
+        decoration: BoxDecoration(color: AppTheme.navyBlue.withValues(alpha: .05)),
         child: Row(
           children: [
             const CircleAvatar(radius: 14, backgroundColor: AppTheme.navyBlue, child: Icon(Icons.person, size: 16, color: Colors.white)),
@@ -216,12 +221,12 @@ class _EmptyStateView extends StatelessWidget {
   const _EmptyStateView();
   @override
   Widget build(BuildContext context) {
-    // Provides feedback for an empty verification queue.
+    // High-level: Return structural placeholder layout when collections report zero items.
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.check_circle_outline, size: 64, color: AppTheme.ecoTeal.withOpacity(0.5)),
+          Icon(Icons.check_circle_outline, size: 64, color: AppTheme.ecoTeal.withValues(alpha: .5)),
           const SizedBox(height: 16),
           const Text("All Caught Up!", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         ],

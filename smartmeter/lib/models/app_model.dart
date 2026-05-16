@@ -56,43 +56,67 @@ class Users {
 class Appliance {
   final String id;
   final String name;
+  final String type;      
+  final String location;  
   final double wattage;
   final double probDay;
   final double probNight;
   final double maxDurationHr;
   final String status;
+  final List<double> states;    
+  final int maxStateIndex;     
 
   Appliance({
     required this.id,
     required this.name,
+    required this.type,
+    required this.location,
     required this.wattage,
     required this.probDay,
     required this.probNight,
     required this.maxDurationHr,
-    required this.status
+    required this.status,
+    required this.states,
+    required this.maxStateIndex,
   });
 
   Map<String, dynamic> toMap() {
-    // Maps object to Firestore document format.
+    // High-level: Maps object to Firestore document format for ML backend compatibility.
     return {
       'name': name,
+      'type': type,
+      'location': location,
       'wattage': wattage,
       'prob_day': probDay,
       'prob_night': probNight,
       'max_duration_hr': maxDurationHr,
+      'status': status,
+      // Developer Expectation: 'states' and 'max_state_index' are mandatory for the Python FHMM engine.
+      'states': states,
+      'max_state_index': maxStateIndex,
+      'updatedAt': FieldValue.serverTimestamp(),
     };
   }
 
   factory Appliance.fromFirestore(String id, Map<String, dynamic> data) {
-    // Reconstructs object from Firestore document data.
+  // High-level: Reconstructs object from Firestore document data.
+  
+  // Developer Expectation: Cast the dynamic 'states' list to double to prevent type mismatch errors.
+    final List<dynamic> rawStates = data['states'] ?? [0.0, (data['wattage'] as num?)?.toDouble() ?? 0.0];
+    final List<double> parsedStates = rawStates.map((e) => (e as num).toDouble()).toList();
+
     return Appliance(
       id: id,
       name: data['name'] ?? '',
+      type: data['type'] ?? 'Unknown',           // Added
+      location: data['location'] ?? 'General',   // Added
       wattage: (data['wattage'] as num?)?.toDouble() ?? 0.0,
       probDay: (data['prob_day'] as num?)?.toDouble() ?? 0.1,
       probNight: (data['prob_night'] as num?)?.toDouble() ?? 0.1,
       maxDurationHr: (data['max_duration_hr'] as num?)?.toDouble() ?? 1.0,
-      status: data['status'] ?? '',
+      status: data['status'] ?? 'pending',
+      states: parsedStates,                      // Added
+      maxStateIndex: (data['max_state_index'] as num?)?.toInt() ?? (parsedStates.length - 1), // Added
     );
   }
 }

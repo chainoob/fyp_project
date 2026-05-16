@@ -1,5 +1,6 @@
-# High-level: Expose Pydantic models for API request validation.
+# ml_backend/models/__init__.py
 from .request_models import (
+    FeedbackRequest, 
     OptimizationRequest, 
     SyncRequest, 
     DisaggregationRequest

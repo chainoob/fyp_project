@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:http/http.dart' as http;
 import 'package:smartmeter/models/app_model.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:smartmeter/utils/logger.dart';
 
 abstract class EnergyRepository {
@@ -21,9 +23,10 @@ abstract class EnergyRepository {
   Future<void> saveAppliance(String userId, Appliance app);
   Future<void> deleteAppliance(String userId, String appId);
   Future<void> updateApplianceStatus(String userId, String appId, String status);
-
+  Stream<DocumentSnapshot> listenToDisaggregation(String userId);
+  Future<void> triggerDisaggregation(String userId, Map<String, dynamic> context);
+  Future<void> sendFeedback(Map<String, dynamic> feedbackData);
   Future<String> getStudentDisplayId(String uid);
-  Future<void> triggerDisaggregation(String userId, String billId, double totalBill);
 
   Stream<Map<String, dynamic>> getStudentGoalStream(String uid);
   Future<void> updateStudentGoal(String uid, double newGoal);
@@ -48,6 +51,7 @@ class FirestoreRepository implements EnergyRepository {
   FirebaseAuth get _auth => FirebaseAuth.instance;
   FirebaseFirestore get _db => FirebaseFirestore.instance;
   final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
+  final String _baseUrl = 'https://your-api-url.com/api/v1';
 
   @override
 Stream<Users?> get authStateChanges {
@@ -158,15 +162,19 @@ Stream<Users?> get authStateChanges {
       await _db.collection('users').doc(userId).collection('appliances').doc(appId).update({'status': status});
 
   @override
-  Future<void> triggerDisaggregation(String userId, String billId, double totalBill) async {
-    final callable = FirebaseFunctions.instanceFor(region: 'asia-southeast1').httpsCallable('triggerDisaggregation');
-    await callable.call({
-      'blockId': userId,
-      'totalBill': totalBill,
-      'month': DateTime.now().toIso8601String().substring(0, 7),
-      'trainModel': true,
-    });
-  }
+
+  Future<void> triggerDisaggregation(String userId, Map<String, dynamic> context) async {
+  final callable = FirebaseFunctions.instanceFor(region: 'asia-southeast1')
+      .httpsCallable('triggerDisaggregation');
+  
+  // High-level: The keys in this map must match request.data in index.js.
+  await callable.call({
+    'blockId': userId,
+    'totalBill': context['totalBill'],
+    'month': context['month'],
+    'trainModel': context['trainModel'],
+  });
+}
 
   @override
   Future<String> getStudentDisplayId(String uid) async {
@@ -284,6 +292,32 @@ Stream<Users?> get authStateChanges {
       );
     } catch (e) {
       rethrow;
+    }
+  }
+  
+  @override
+  Stream<DocumentSnapshot<Object?>> listenToDisaggregation(String userId) {
+    // High-level: Provides a real-time stream of the latest disaggregation result.
+    return _db
+        .collection('users')
+        .doc(userId)
+        .collection('daily_usage')
+        .orderBy('timestamp', descending: true)
+        .limit(1)
+        .snapshots()
+        .map((snapshot) => snapshot.docs.first);
+  }
+  
+  @override
+  Future<void> sendFeedback(Map<String, dynamic> feedbackData) async{
+    // High-level: Submits user corrections to the reinforcement learning endpoint.
+    final response = await http.post(
+      Uri.parse('$_baseUrl/feedback'),
+      body: jsonEncode(feedbackData),
+      headers: {'Content-Type': 'application/json'},
+    );
+    if (response.statusCode != 200) {
+      AppLog.error('Feedback Submission', response.body);
     }
   }
 }
