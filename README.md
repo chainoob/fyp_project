@@ -1,6 +1,6 @@
 This is my final year project. This project is definitely not a good project and i am still trying to learn more in software engineering
 
-# Smart Hostel Energy Monitor & Disaggregation System
+# SmartMeter Energy Management System
 
 A Non-Intrusive Load Monitoring (NILM) platform that disaggregates aggregate smart meter readings into individual appliance profiles using a Factorial Hidden Markov Model — no sub-metering hardware required.
 
