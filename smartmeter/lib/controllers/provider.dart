@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter/material.dart';
 import 'package:smartmeter/models/app_model.dart';
+import 'package:smartmeter/services/api_service.dart';
 import 'package:smartmeter/services/energy_repo.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
@@ -147,6 +148,38 @@ class ApplianceProvider extends ChangeNotifier {
   
   // Provides access to the grouped queue entries.
   List<MapEntry<String, Appliance>> get pendingQueue => _pendingQueue;
+
+  final ApiService _apiService = ApiService();
+  bool _isAnalyzing = false;
+  Map<String, dynamic>? _latestReportData;
+
+  bool get isAnalyzing => _isAnalyzing;
+  Map<String, dynamic>? get latestReportData => _latestReportData;
+
+  Future<void> fetchDisaggregationAnalysis({
+    required String userId,
+    required List<double> readings,
+  }) async {
+    _isAnalyzing = true;
+    notifyListeners();
+
+    try {
+      // High-level: Dispatch asynchronous telemetry block to Cloud Run infrastructure.
+      final data = await _apiService.triggerDisaggregation(
+        userId: userId,
+        aggregateReadings: readings,
+      );
+      
+      // Developer Expectation: Store raw data map locally or parse directly into model state here.
+      _latestReportData = data;
+    } catch (e) {
+      _latestReportData = null;
+      rethrow;
+    } finally {
+      _isAnalyzing = false;
+      notifyListeners();
+    }
+  }
 
   void subscribeToUser(String userId) {
     // Synchronizes the local appliance list with the user's specific subcollection.

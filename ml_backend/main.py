@@ -1,12 +1,13 @@
 import logging
 import datetime
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from models.request_models import FeedbackRequest, OptimizationRequest, SyncRequest, DisaggregationRequest
 from services.firebase_client import FirebaseClient
 from services.simulator import AdaptiveBehavioralSimulator
 from services.optimizer import EnergyOptimizer
 from services.fhmm_service import FHMMService
 from utils.response_formatter import format_api_response
+from utils.auth import verify_firebase_token, validate_user_ownership
 import traceback
 
 # Initialize logging for backend observability.
@@ -33,9 +34,10 @@ async def root():
     return {"status": "online", "message": "ML Backend Active"}
 
 @app.post("/api/v1/optimize")
-async def run_optimization(request: OptimizationRequest):
+async def run_optimization(request: OptimizationRequest, token: dict = Depends(verify_firebase_token)):
     # Calibrates behavioral weights against ground-truth bill values.
     try:
+        validate_user_ownership(request.user_id, token["uid"])
         logger.info(f"Optimizing weights for user: {request.user_id}")
         appliances = db.get_user_appliances(request.user_id)
         if not appliances:
@@ -53,9 +55,10 @@ async def run_optimization(request: OptimizationRequest):
         raise HTTPException(status_code=500, detail="Failed to optimize energy weights.")
 
 @app.post("/api/v1/disaggregate")
-async def process_telemetry(request: DisaggregationRequest):
+async def process_telemetry(request: DisaggregationRequest, token: dict = Depends(verify_firebase_token)):
     # Executes disaggregation pipeline and persists results to Firestore.
     try:
+        validate_user_ownership(request.user_id, token["uid"])
         user_id = request.user_id
         logger.info(f"Running disaggregation for user: {user_id}")
         
@@ -98,22 +101,17 @@ async def process_telemetry(request: DisaggregationRequest):
         db.save_disaggregation_result(payload)
         return format_api_response(True, data=payload)
     except Exception as e:
-        error_stack = traceback.format_exc()
-        logger.error(f"Disaggregation failed: {error_stack}")
-    
-        # Return the trace in the HTTP response for immediate viewing
+        logger.error(f"Disaggregation failed for user {request.user_id}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500, 
-            detail={
-                "error": str(e),
-                "traceback": error_stack
-            }
+            detail="An internal error occurred during disaggregation."
         )
 
 @app.post("/api/v1/sync-daily")
-async def sync_daily_usage(request: SyncRequest):
+async def sync_daily_usage(request: SyncRequest, token: dict = Depends(verify_firebase_token)):
     # Generates and persists high-fidelity 24-hour time-series data.
     try:
+        validate_user_ownership(request.user_id, token["uid"])
         appliances = db.get_user_appliances(request.user_id)
         results = simulator.run_monte_carlo(appliances, request.context)
         
@@ -139,9 +137,10 @@ def generate_recommendations(breakdown: dict) -> list:
     return advice
 
 @app.post("/api/v1/feedback")
-async def handle_feedback(request: FeedbackRequest):
+async def handle_feedback(request: FeedbackRequest, token: dict = Depends(verify_firebase_token)):
     # Processes corrections and applies reinforcement learning adjustments.
     try:
+        validate_user_ownership(request.user_id, token["uid"])
         db.log_feedback(request)
         user_apps = db.get_user_appliances(request.user_id)
         app_data = user_apps.get(request.appliance_name)

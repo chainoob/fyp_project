@@ -1,7 +1,7 @@
 # ml_backend/models/request_models.py
 
-from pydantic import BaseModel
-from typing import Dict, Any
+from pydantic import BaseModel, Field
+from typing import Dict, Any, List
 
 class OptimizationRequest(BaseModel):
     # Expects userId for database lookup and actualBill for objective targeting.
@@ -14,9 +14,9 @@ class SyncRequest(BaseModel):
     context: Dict[str, Any]
 
 class DisaggregationRequest(BaseModel):
-    # Expects a list of aggregate power readings to be separated.
     user_id: str
-    aggregate_readings: list[float]
+    # High-level: Enforce minimum item boundaries on time-series telemetry vectors.
+    aggregate_readings: List[float] = Field(..., min_length=1)
     
 class FeedbackRequest(BaseModel):
     # High-level: Schema for capturing student corrections of AI predictions.

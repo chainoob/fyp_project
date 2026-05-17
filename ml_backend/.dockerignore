@@ -6,6 +6,9 @@ __pycache__/
 
 # Exclude local environment and secrets
 .env
+venv/
+.venv/
+env/
 serviceAccountKey.json
 .git/
 

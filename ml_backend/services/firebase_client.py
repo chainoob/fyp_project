@@ -37,12 +37,17 @@ class FirebaseClient:
                 cred = credentials.ApplicationDefault()
                 AppLog.info("FIREBASE_INIT", "Using Application Default Credentials (ADC).")
             except Exception:
-                try:
-                    cred = credentials.Certificate("serviceAccountKey.json")
-                    AppLog.info("FIREBASE_INIT", "Falling back to local serviceAccountKey.json.")
-                except Exception as e:
-                    AppLog.error("FIREBASE_INIT", "No valid credentials found across ADC, ENV, or Local.")
-                    raise FileNotFoundError("No Firebase credentials found (ADC, env var, or local file).")
+                # Only allow local file fallback if explicitly in debug mode
+                if os.environ.get("DEBUG", "false").lower() == "true":
+                    try:
+                        cred = credentials.Certificate("serviceAccountKey.json")
+                        AppLog.info("FIREBASE_INIT", "Falling back to local serviceAccountKey.json (DEBUG=true).")
+                    except Exception as e:
+                        AppLog.error("FIREBASE_INIT", "Debug mode fallback failed.")
+                        raise FileNotFoundError("Local serviceAccountKey.json not found.")
+                else:
+                    AppLog.error("FIREBASE_INIT", "ADC failed and local fallback disabled in production.")
+                    raise RuntimeError("No valid Firebase credentials found and local fallback disabled.")
 
         firebase_admin.initialize_app(cred)
 

@@ -1,22 +1,16 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../config/theme.dart';
 import '../../controllers/provider.dart';
-
-// NOTE: If you haven't implemented the real ImageClassifier yet,
-// you can comment out this import and the specific lines in _processImage.
-// import '../../services/image_classifier.dart';
+import '../../services/classifier_service.dart'; // Ensure correct structural path match
 
 class AddApplianceScreen extends StatefulWidget {
   final String userId;
 
-  const AddApplianceScreen({
-    super.key,
-    required this.userId
-  });
+  const AddApplianceScreen({super.key, required this.userId});
 
   @override
   State<AddApplianceScreen> createState() => _AddApplianceScreenState();
@@ -44,12 +38,17 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
   File? _image;
   bool _isProcessing = false;
   final ImagePicker _picker = ImagePicker();
+  
+  // High-level: Instantiate localized computer vision instance for model execution lifecycle.
+  final ClassifierService _classifierService = ClassifierService();
 
   @override
   void dispose() {
     _nameCtrl.dispose();
     _wattCtrl.dispose();
     _roomCtrl.dispose();
+    // Developer Expectation: Explicit disposal of edge model to release internal memory structures.
+    _classifierService.dispose();
     super.dispose();
   }
 
@@ -66,7 +65,6 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
           _isProcessing = true;
         });
 
-        // Trigger the AI processing
         await _processImage(_image!);
       }
     } catch (e) {
@@ -78,29 +76,30 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
   }
 
   Future<void> _processImage(File image) async {
-    // TODO: Connect this to your real 'ImageClassifier' service.
-
-    await Future.delayed(const Duration(seconds: 1));
-
-    final detectedLabel = "kettle";
-
-    _applyAiResults(detectedLabel);
+    try {
+      // High-level: Direct matrix image stream into processing channel execution block.
+      final String? detectedLabel = await _classifierService.classifyDeviceImage(image);
+      
+      // Developer Expectation: Fallback to error routing string path when tensor confidence conditions fail.
+      _applyAiResults(detectedLabel ?? "Prohibited/Unknown Asset");
+    } catch (e) {
+      debugPrint("Classification Processing Mismatch Exception: $e");
+      _applyAiResults("Prohibited/Unknown Asset");
+    }
   }
 
   void _applyAiResults(String label) {
-    // Normalize to Title Case
     String formattedLabel = label.isNotEmpty
         ? label[0].toUpperCase() + label.substring(1).toLowerCase()
         : '';
 
     setState(() {
-      // Logic to enforce allowed types
       if (_allowedTypes.contains(formattedLabel)) {
         _selectedType = formattedLabel;
         _showSnackBar("AI Detected: $formattedLabel", isError: false);
       } else {
         _selectedType = null;
-        _showSnackBar("Detected '$formattedLabel' is prohibited in hostels.", isError: true);
+        _showSnackBar("Detected item is prohibited or unrecognized under current hostel policy.", isError: true);
       }
     });
   }
@@ -115,13 +114,13 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
     try {
       await context.read<ApplianceProvider>().add(
         _nameCtrl.text.trim(),
-        _selectedType!, // Value guaranteed by validator
+        _selectedType!, 
         int.parse(_wattCtrl.text.trim()),
         _roomCtrl.text.trim(),
       );
 
       if (mounted) {
-        Navigator.pop(context); // Return to list
+        Navigator.pop(context); 
         ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text("Device submitted for verification"),
@@ -269,7 +268,7 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
           children: [
             Container(
               padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(blurRadius: 10, color: Colors.black.withValues(alpha: 0.1))]),
+              decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(blurRadius: 10, color: Colors.black.withValues(alpha:0.1))]),
               child: const Icon(Icons.camera_alt, size: 32, color: AppTheme.ecoTeal),
             ),
             const SizedBox(height: 12),

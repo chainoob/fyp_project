@@ -1,6 +1,6 @@
 import 'package:cloud_functions/cloud_functions.dart';
 
-class AIService {
+class CloudService {
   // Region must explicitly match the deployed Cloud Function
   final FirebaseFunctions _functions = FirebaseFunctions.instanceFor(region: 'asia-southeast1');
 
