@@ -11,7 +11,7 @@ class VerificationScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // High-level: Rebuild the view layout dynamically whenever the baseline application state mutates.
+    // Synchronize UI with reactive appliance queue state.
     final provider = context.watch<ApplianceProvider>();
     final pendingEntries = provider.pendingQueue;
 
@@ -32,7 +32,7 @@ class VerificationScreen extends StatelessWidget {
       itemBuilder: (ctx, index) {
         final uid = ownerIds[index];
         return _StudentGroupCard(
-          key: ValueKey(uid), // Developer Expectation: Maintain independent state contexts per identifier during UI updates.
+          key: ValueKey(uid), // Maintain independent state contexts per student identifier.
           uid: uid, 
           studentApps: groupedData[uid]!,
         );
@@ -56,7 +56,7 @@ class _StudentGroupCardState extends State<_StudentGroupCard> {
 
   @override
   Widget build(BuildContext context) {
-    // High-level: Isolate expansion mechanics inside specified student groupings.
+    // Encapsulate expansion logic within student groupings.
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
@@ -75,7 +75,7 @@ class _StudentGroupCardState extends State<_StudentGroupCard> {
           if (_isExpanded) ...[
             const Divider(height: 1),
             ...widget.studentApps.map((app) => _ApplianceActionTile(
-              key: ValueKey(app.id), // Developer Expectation: Ensure correct list row extraction upon queue mutations.
+              key: ValueKey(app.id), // Ensure stable list extraction during queue mutations.
               app: app, 
               userId: widget.uid,
             )),
@@ -100,7 +100,7 @@ class _ApplianceActionTileState extends State<_ApplianceActionTile> {
   bool _isProcessing = false;
 
   Future<void> _handleAction(BuildContext context, bool isApprove) async {
-    // High-level: Execute network transaction requests and handle baseline context verification.
+    // Dispatch status update transaction to Firestore via ApplianceProvider.
     if (_isProcessing) return;
 
     setState(() => _isProcessing = true);
@@ -134,7 +134,7 @@ class _ApplianceActionTileState extends State<_ApplianceActionTile> {
 
   @override
   Widget build(BuildContext context) {
-    // High-level: Process layout attributes for discrete database entities.
+    // Map appliance attributes to discrete UI components.
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -189,7 +189,7 @@ class _GroupHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // High-level: Handle rendering sequence for consumer metadata headers.
+    // Render student metadata and queue summary.
     return InkWell(
       onTap: onToggle,
       child: Container(
@@ -221,7 +221,7 @@ class _EmptyStateView extends StatelessWidget {
   const _EmptyStateView();
   @override
   Widget build(BuildContext context) {
-    // High-level: Return structural placeholder layout when collections report zero items.
+    // Structural placeholder for empty verification queue.
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,

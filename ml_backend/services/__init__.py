@@ -3,6 +3,7 @@ from .simulator import AdaptiveBehavioralSimulator
 from .optimizer import EnergyOptimizer
 from .fhmm_service import FHMMService
 from .firebase_client import FirebaseClient
+from .weather_service import WeatherService
 
 # Developer Expectation: 
 # Acts as the primary interface for the ML pipeline orchestration in main.py.

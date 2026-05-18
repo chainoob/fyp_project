@@ -5,49 +5,59 @@ import os
 import firebase_admin
 from firebase_admin import credentials, firestore
 from utils.logger import AppLog
+from utils.secrets import get_secret
 
 class FirebaseClient:
     # High-level: Centralized Firestore client with Cloud Run and local credential support.
 
     def __init__(self):
         # High-level: Initialize the Firestore SDK and establish the database client.
+        self.credential_source = "uninitialized"
         self._setup_credentials()
         self.db = firestore.client()
 
     def _setup_credentials(self):
-        # High-level: Configures SDK using ADC, Base64 environment variables, or local JSON fallback.
+        # High-level: Configures SDK using Secret Manager, ADC, or local JSON fallback.
         if firebase_admin._apps:
             # Developer Expectation: Prevent re-initialization if the app context is already active.
             return
 
-        encoded_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
-        
-        if encoded_json:
+        # Production Path 1: Google Cloud Secret Manager
+        sa_json, source = get_secret("FIREBASE_SERVICE_ACCOUNT")
+        if sa_json:
             try:
-                decoded_bytes = base64.b64decode(encoded_json)
-                cert_dict = json.loads(decoded_bytes)
+                # Payload can be raw JSON or Base64 (handle both for legacy compatibility)
+                try:
+                    cert_dict = json.loads(sa_json)
+                except (json.JSONDecodeError, TypeError):
+                    decoded_bytes = base64.b64decode(sa_json)
+                    cert_dict = json.loads(decoded_bytes)
+                
                 cred = credentials.Certificate(cert_dict)
-                AppLog.info("FIREBASE_INIT", "Credentials initialized via environment variable.")
+                self.credential_source = "secret_manager"
+                AppLog.info("FIREBASE_INIT", "Credentials initialized via Secret Manager.")
             except Exception as e:
-                AppLog.error("FIREBASE_INIT", f"Environment variable credential decoding failed: {str(e)}")
-                raise RuntimeError(f"Cloud credential initialization failed: {e}")
+                AppLog.error("FIREBASE_INIT", f"Secret Manager credential parsing failed: {str(e)}")
+                raise
         else:
             try:
-                # Developer Expectation: Prioritize ADC for seamless Cloud Run service account identity.
+                # Production Path 2: Application Default Credentials (ADC)
                 cred = credentials.ApplicationDefault()
+                self.credential_source = "adc"
                 AppLog.info("FIREBASE_INIT", "Using Application Default Credentials (ADC).")
             except Exception:
-                # Only allow local file fallback if explicitly in debug mode
+                # Development Path: Local JSON Fallback (DEBUG mode only)
                 if os.environ.get("DEBUG", "false").lower() == "true":
                     try:
                         cred = credentials.Certificate("serviceAccountKey.json")
-                        AppLog.info("FIREBASE_INIT", "Falling back to local serviceAccountKey.json (DEBUG=true).")
+                        self.credential_source = "local_file"
+                        AppLog.info("FIREBASE_INIT", "Falling back to local serviceAccountKey.json.")
                     except Exception as e:
-                        AppLog.error("FIREBASE_INIT", "Debug mode fallback failed.")
+                        AppLog.error("FIREBASE_INIT", "Local fallback failed.")
                         raise FileNotFoundError("Local serviceAccountKey.json not found.")
                 else:
-                    AppLog.error("FIREBASE_INIT", "ADC failed and local fallback disabled in production.")
-                    raise RuntimeError("No valid Firebase credentials found and local fallback disabled.")
+                    AppLog.error("FIREBASE_INIT", "No valid credentials found. Deployment likely misconfigured.")
+                    raise RuntimeError("No valid Firebase credentials found.")
 
         firebase_admin.initialize_app(cred)
 

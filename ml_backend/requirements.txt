@@ -4,6 +4,9 @@ pandas>=2.2.3
 scikit-learn==1.4.1.post1
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
+gunicorn>=21.2.0
+requests>=2.31.0
+google-cloud-secret-manager>=2.20.0
 pydantic>=2.9.0
 firebase-admin==6.5.0
 python-dateutil==2.8.2
