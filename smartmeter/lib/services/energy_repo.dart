@@ -25,7 +25,6 @@ abstract class EnergyRepository {
   Future<void> updateApplianceStatus(String userId, String appId, String status);
   Stream<DocumentSnapshot> listenToDisaggregation(String userId);
   Future<void> triggerDisaggregation(String userId, Map<String, dynamic> context);
-  Future<void> sendFeedback(Map<String, dynamic> feedbackData);
   Future<String> getStudentDisplayId(String uid);
 
   // Real-time Telemetry Engine
@@ -46,6 +45,13 @@ abstract class EnergyRepository {
     String? blockId,
     String? unitId,
   });
+
+  Future<void> sendFeedback({
+    required String userId,
+    required String applianceName,
+    required bool actualState,
+    required bool predictedState,
+  });
 }
 
 // smartmeter/lib/services/energy_repo.dart
@@ -54,7 +60,7 @@ class FirestoreRepository implements EnergyRepository {
   FirebaseAuth get _auth => FirebaseAuth.instance;
   FirebaseFirestore get _db => FirebaseFirestore.instance;
   final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
-  final String _baseUrl = 'https://your-api-url.com/api/v1';
+  final String _baseUrl = 'https://ml-backend-338592292074.asia-southeast1.run.app/api/v1';
 
   @override
 Stream<Users?> get authStateChanges {
@@ -329,15 +335,34 @@ Stream<Users?> get authStateChanges {
   }
   
   @override
-  Future<void> sendFeedback(Map<String, dynamic> feedbackData) async{
-    // High-level: Submits user corrections to the reinforcement learning endpoint.
+  Future<void> sendFeedback({
+    required String userId,
+    required String applianceName,
+    required bool actualState,
+    required bool predictedState,
+  }) async {
+    final User? user = _auth.currentUser;
+    if (user == null) throw Exception("User session missing.");
+
+    final String? idToken = await user.getIdToken();
     final response = await http.post(
       Uri.parse('$_baseUrl/feedback'),
-      body: jsonEncode(feedbackData),
-      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'user_id': userId,
+        'appliance_name': applianceName,
+        'actual_state': actualState,
+        'predicted_state': predictedState,
+        'timestamp': DateTime.now().toIso8601String(),
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $idToken',
+      },
     );
+
     if (response.statusCode != 200) {
       AppLog.error('Feedback Submission', response.body);
+      throw Exception("Failed to sync feedback with AI engine.");
     }
   }
 }

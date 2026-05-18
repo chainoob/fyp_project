@@ -529,6 +529,26 @@ class EnergyProvider extends ChangeNotifier {
     }
   }
 
+  // Cloud Run Feedback Integration
+  Future<void> submitFeedback({
+    required String userId,
+    required String applianceName,
+    required bool actualState,
+    required bool predictedState,
+  }) async {
+    try {
+      await _repository.sendFeedback(
+        userId: userId,
+        applianceName: applianceName,
+        actualState: actualState,
+        predictedState: predictedState,
+      );
+    } catch (e, stack) {
+      AppLog.error("Feedback Loop Failure", e, stack);
+      rethrow;
+    }
+  }
+
   @override
   void dispose() {
     _telemetrySub?.cancel();

@@ -188,10 +188,19 @@ async def handle_feedback(request: FeedbackRequest, token: dict = Depends(verify
         is_false_positive = (request.predicted_state and not request.actual_state)
         learning_rate = 0.05
         current_p = app_data.get('prob_day', 0.5)
-        
+
+        # Behavioral adjustment: Tune usage probabilities
         new_p = max(0.01, current_p - learning_rate) if is_false_positive else min(0.99, current_p + learning_rate)
         db.update_single_appliance_prob(request.user_id, request.appliance_name, new_p)
 
-        return format_api_response(True, data={"new_probability": new_p})
-    except Exception as e:
+        # Signature adjustment: Tune FHMM emission parameters (Advanced Loop)
+        if is_false_positive:
+            # If the AI over-predicted, slightly increase the variance (std_dev) 
+            # to make the model more 'skeptical' of noisy signals for this appliance.
+            current_std = app_data.get('std_dev', 1.0)
+            db.update_appliance_signature_meta(request.user_id, request.appliance_name, {
+                "std_dev": current_std * 1.05
+            })
+
+        return format_api_response(True, data={"new_probability": new_p})    except Exception as e:
         return format_api_response(False, message=str(e))

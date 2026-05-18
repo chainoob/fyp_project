@@ -154,3 +154,13 @@ class FirebaseClient:
             AppLog.info("FIRESTORE_UPDATE", f"Updated {app_name} probability to {new_prob}")
         except Exception as e:
             AppLog.error("FIRESTORE_UPDATE", f"Single update failed for {app_name}: {str(e)}")
+
+    def update_appliance_signature_meta(self, user_id: str, app_name: str, meta: dict):
+        # High-level: Persists tuned FHMM emission parameters (std_dev, etc.) to Firestore.
+        try:
+            app_ref = self.db.collection('users').document(user_id) \
+                .collection('appliances').document(app_name)
+            app_ref.update(meta)
+            AppLog.info("FIRESTORE_META", f"Updated signature metadata for {app_name}: {meta}")
+        except Exception as e:
+            AppLog.error("FIRESTORE_META", f"Meta update failed for {app_name}: {str(e)}")

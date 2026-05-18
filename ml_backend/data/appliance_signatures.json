@@ -1,44 +1,79 @@
 {
   "Fan": {
-    "states": [0, 40, 75],
+    "states": [0.0, 40.0, 75.0],
     "max_state_index": 2,
     "std_dev": 2.5,
     "type": "resistive",
-    "description": "REDD-distilled: Low/High fan states"
+    "description": "REDD-distilled: Low/High fan states",
+    "prob_day": 0.35,
+    "prob_night": 0.40,
+    "max_duration_hr": 24.0,
+    "default_wattage": 75.0
   },
   "Laptop": {
-    "states": [0, 25, 65, 120],
+    "states": [0.0, 25.0, 65.0, 120.0],
     "max_state_index": 3,
     "std_dev": 5.0,
     "type": "smps",
-    "description": "REDD-distilled: Idle/Standard/Heavy-Load laptop states"
+    "description": "REDD-distilled: Idle/Standard/Heavy-Load laptop states",
+    "prob_day": 0.60,
+    "prob_night": 0.40,
+    "max_duration_hr": 12.0,
+    "default_wattage": 65.0
   },
-  "Kettle": {
-    "states": [0, 1800, 2200],
-    "max_state_index": 2,
-    "std_dev": 15.0,
-    "type": "heating",
-    "description": "REDD-distilled: High-power thermal signature"
+  "Charger": {
+    "states": [0.0, 5.0, 15.0, 30.0],
+    "max_state_index": 3,
+    "std_dev": 1.0,
+    "type": "smps",
+    "description": "Mobile/Tablet Charger: Low-power consumption",
+    "prob_day": 0.80,
+    "prob_night": 0.90,
+    "max_duration_hr": 8.0,
+    "default_wattage": 20.0
   },
   "Lamp": {
-    "states": [0, 15, 30],
+    "states": [0.0, 15.0, 30.0],
     "max_state_index": 2,
     "std_dev": 0.5,
     "type": "resistive",
-    "description": "REDD-distilled: LED/Fluorescent states"
+    "description": "REDD-distilled: LED/Fluorescent states",
+    "prob_day": 0.10,
+    "prob_night": 0.70,
+    "max_duration_hr": 10.0,
+    "default_wattage": 25.0
   },
   "Iron": {
-    "states": [0, 800, 1200, 1500],
+    "states": [0.0, 800.0, 1200.0, 1500.0],
     "max_state_index": 3,
     "std_dev": 20.0,
     "type": "thermal_cycling",
-    "description": "REDD-distilled: Cycling thermostat states"
+    "description": "REDD-distilled: Cycling thermostat states",
+    "prob_day": 0.05,
+    "prob_night": 0.02,
+    "max_duration_hr": 1.0,
+    "default_wattage": 1200.0
   },
-  "Fridge": {
-    "states": [5, 120, 250],
+  "Kettle": {
+    "states": [0.0, 1800.0, 2200.0],
     "max_state_index": 2,
-    "std_dev": 8.0,
-    "type": "inductive_cycling",
-    "description": "REDD-distilled: Standby/Compressor-ON/Defrost"
+    "std_dev": 15.0,
+    "type": "heating",
+    "description": "REDD-distilled: High-power thermal signature",
+    "prob_day": 0.10,
+    "prob_night": 0.05,
+    "max_duration_hr": 0.5,
+    "default_wattage": 2000.0
+  },
+  "Printer": {
+    "states": [0.0, 10.0, 50.0, 450.0],
+    "max_state_index": 3,
+    "std_dev": 10.0,
+    "type": "intermittent_high_load",
+    "description": "Desk Printer: Standby/Warming/Printing",
+    "prob_day": 0.15,
+    "prob_night": 0.05,
+    "max_duration_hr": 2.0,
+    "default_wattage": 100.0
   }
 }

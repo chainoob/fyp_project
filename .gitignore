@@ -33,9 +33,6 @@ google-services.json
 #vscode
 .vscode/launch.json
 
-#secret
-ml_backend/serviceAccountKey.json
-
 #tests
 ml_backend/tests
 

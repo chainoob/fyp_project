@@ -104,7 +104,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             const SizedBox(height: 24),
           ],
 
-          _buildSectionTitle("Usage Breakdown"),
+          _buildSectionTitle("AI Prediction Verification"),
+          const SizedBox(height: 12),
+          _buildFeedbackCard(mlReport.breakdown.keys.toList()),
+          const SizedBox(height: 24),
           const SizedBox(height: 12),
           _buildBreakdownCard(
             mlReport.estimatedLoad,
@@ -337,6 +340,113 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildFeedbackCard(List<String> applianceNames) {
+    return Card(
+      color: _cardDark,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Colors.white12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "Was the AI accurate?",
+              style: TextStyle(color: _textPrimary, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              "Help improve the disaggregation engine by flagging incorrect appliance states.",
+              style: TextStyle(color: _textSecondary, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 40,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: applianceNames.length,
+                separatorBuilder: (context, index) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  return ActionChip(
+                    label: Text(applianceNames[index], style: const TextStyle(fontSize: 11)),
+                    backgroundColor: _cCyan.withAlpha(25),
+                    side: BorderSide(color: _cCyan.withAlpha(51)),
+                    onPressed: () => _showFeedbackDialog(applianceNames[index]),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showFeedbackDialog(String applianceName) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        bool actualState = true;
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              backgroundColor: _cardDark,
+              title: Text("Verify $applianceName", style: TextStyle(color: _textPrimary)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    "The AI predicted this appliance was ACTIVE during the recording period. Is this correct?",
+                    style: TextStyle(color: _textSecondary, fontSize: 14),
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text("NO", style: TextStyle(color: !actualState ? _cCyan : _textSecondary, fontWeight: FontWeight.bold)),
+                      Switch(
+                        value: actualState,
+                        onChanged: (val) => setState(() => actualState = val),
+                        activeColor: _cCyan,
+                      ),
+                      Text("YES", style: TextStyle(color: actualState ? _cCyan : _textSecondary, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text("CANCEL", style: TextStyle(color: _textSecondary)),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    final user = context.read<AppAuthProvider>().currentUser;
+                    if (user != null) {
+                      await context.read<EnergyProvider>().submitFeedback(
+                        userId: user.uid,
+                        applianceName: applianceName,
+                        actualState: actualState,
+                        predictedState: true, // Currently we only flag anomalies (predicted active)
+                      );
+                      if (mounted) {
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text("Feedback synced with AI engine. Thank you!"))
+                        );
+                      }
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(backgroundColor: _cCyan),
+                  child: const Text("SUBMIT", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
