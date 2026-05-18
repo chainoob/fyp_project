@@ -31,26 +31,35 @@ class FHMMService:
         models = {}
         # High-level: Parse signature configurations to initialize underlying FHMM components.
         for appliance, stats in self.signatures.items():
-            if 'states' not in stats or 'max_state_index' not in stats:
+            if 'states' not in stats:
                 AppLog.error("FHMM_INIT", f"Skipping {appliance}: Signature fields missing.")
                 continue
                 
             try:
                 states_list = stats['states']
-                max_idx = stats['max_state_index']
-                operational_mean = states_list[max_idx]
+                n_states = len(states_list)
+                std_dev = stats.get('std_dev', 1.0)
                 
-                # Developer Expectation: Instantiate GaussianHMM with 2 states (OFF/ON).
-                model = hmm.GaussianHMM(n_components=2, covariance_type="diag") 
+                # Developer Expectation: Instantiate GaussianHMM with N states defined by the signature.
+                model = hmm.GaussianHMM(n_components=n_states, covariance_type="diag") 
                 
                 # Developer Expectation: Manually set HMM parameters for prediction-only mode.
-                model.startprob_ = np.array([0.5, 0.5])
-                model.transmat_ = np.array([[0.9, 0.1], [0.1, 0.9]])
-                model.means_ = np.array([[0.0], [float(operational_mean)]])
-                model.covars_ = np.array([[1.0], [1.0]]) # Small variance for stable decoding.
+                # Initialize start probabilities and transition matrices for a general N-state model.
+                model.startprob_ = np.full(n_states, 1.0 / n_states)
+                
+                # Create a simple transition matrix: high probability of staying in the same state.
+                trans_matrix = np.full((n_states, n_states), 0.1 / (n_states - 1))
+                np.fill_diagonal(trans_matrix, 0.9)
+                model.transmat_ = trans_matrix
+                
+                # Set means based on the signature states.
+                model.means_ = np.array([[float(s)] for s in states_list])
+                
+                # Set covariances based on the signature std_dev.
+                model.covars_ = np.array([[float(std_dev**2)] for _ in range(n_states)])
                 
                 models[appliance] = model
-                AppLog.info("FHMM_INIT", f"Initialized {appliance} at {operational_mean}W.")
+                AppLog.info("FHMM_INIT", f"Initialized {appliance} with {n_states} states (StdDev: {std_dev}W).")
             except Exception as e:
                 AppLog.error("FHMM_INIT", f"Failed to compile model matrices for {appliance}: {str(e)}")
                 

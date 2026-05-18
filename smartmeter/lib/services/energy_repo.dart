@@ -28,6 +28,9 @@ abstract class EnergyRepository {
   Future<void> sendFeedback(Map<String, dynamic> feedbackData);
   Future<String> getStudentDisplayId(String uid);
 
+  // Real-time Telemetry Engine
+  Stream<List<double>> getLiveReadingsStream(String userId);
+
   Stream<Map<String, dynamic>> getStudentGoalStream(String uid);
   Future<void> updateStudentGoal(String uid, double newGoal);
   Stream<Map<String, dynamic>> getCampusGoalStream();
@@ -184,6 +187,21 @@ Stream<Users?> get authStateChanges {
   }
 
   @override
+  Stream<List<double>> getLiveReadingsStream(String userId) {
+    // High-level: Provides a real-time stream of the latest raw telemetry readings.
+    return _db
+        .collection('users')
+        .doc(userId)
+        .collection('telemetry')
+        .orderBy('timestamp', descending: true)
+        .limit(10) // Capture last 10 readings for contextual smoothing
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => (doc.data()['wattage'] as num).toDouble())
+            .toList());
+  }
+
+  @override
   Stream<Map<String, dynamic>> getStudentGoalStream(String uid) =>
       _db.collection('users').doc(uid).snapshots().map((doc) => doc.data() ?? {});
 
@@ -287,6 +305,8 @@ Stream<Users?> get authStateChanges {
         ),
         usageTrend: [], 
         applianceBreakdown: breakdown,
+        benchmarkBreakdown: Map<String, double>.from(data['benchmark_breakdown'] ?? {}),
+        anomalies: List<String>.from(data['anomalies'] ?? []),
         hourlyUsage: hourly,
         costBreakdown: breakdown.map((key, value) => MapEntry(key, value * electricityRate)),
       );

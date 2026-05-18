@@ -2,9 +2,13 @@ import 'dart:async';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter/material.dart';
 import 'package:smartmeter/models/app_model.dart';
+import 'package:smartmeter/models/disaggregation_response.dart';
 import 'package:smartmeter/services/api_service.dart';
+import 'package:smartmeter/services/disaggregation_service.dart';
 import 'package:smartmeter/services/energy_repo.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 
 import 'package:smartmeter/utils/logger.dart';
 
@@ -389,13 +393,36 @@ class ReportProvider extends ChangeNotifier {
 
 class EnergyProvider extends ChangeNotifier {
   final EnergyRepository _repository;
+  final DisaggregationService _mlService = DisaggregationService();
 
   EnergyReportData? currentReport;
+  DisaggregationResponse? currentMlReport;
+  
+  // Real-time telemetry buffer
+  List<double> _liveReadings = [];
+  StreamSubscription? _telemetrySub;
+
   bool isLoading = true;
   bool isProcessingAI = false;
+  bool isProcessingML = false;
   String? errorMessage;
 
   EnergyProvider(this._repository);
+
+  List<double> get liveReadings => _liveReadings;
+
+  void subscribeToTelemetry(String userId) {
+    _telemetrySub?.cancel();
+    _telemetrySub = _repository.getLiveReadingsStream(userId).listen((readings) {
+      _liveReadings = readings;
+      notifyListeners();
+      
+      // Auto-trigger ML analysis if we have enough live data
+      if (_liveReadings.length >= 4) {
+        fetchRealTimeDisaggregation(aggregateReadings: _liveReadings);
+      }
+    });
+  }
 
   // Read Pipeline
   Future<void> loadReport({
@@ -426,8 +453,11 @@ class EnergyProvider extends ChangeNotifier {
     }
   }
 
-  // Write/Trigger Pipeline
-  Future<void> runDisaggregation(String userId, String billId, double totalBill, {
+  // Cloud Function Async Execution Pipeline
+  Future<void> runDisaggregation(
+    String userId, 
+    String billId, 
+    double totalBill, {
     required String scope,
     required int month,
     required int year,
@@ -437,7 +467,6 @@ class EnergyProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // High-level: Construct the context map to match the Repository and Cloud Function contract.
       final context = {
         'billId': billId,
         'totalBill': totalBill,
@@ -447,10 +476,7 @@ class EnergyProvider extends ChangeNotifier {
         'trainModel': false, 
       };
 
-      // Developer Expectation: This calls the Firebase 'onCall' function.
       await _repository.triggerDisaggregation(userId, context);
-    
-      
     } catch (e, stack) {
       errorMessage = "AI Execution Failed: See logs for details.";
       AppLog.error("Disaggregation Trigger", e, stack);
@@ -458,5 +484,54 @@ class EnergyProvider extends ChangeNotifier {
       isProcessingAI = false;
       notifyListeners();
     }
+  }
+
+  // Live Machine Learning Optimization Pipeline
+  Future<void> fetchRealTimeDisaggregation({
+    required List<double> aggregateReadings,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final String cacheKey = "ml_cache_${user.uid}_${DateTime.now().hour}";
+    final prefs = await SharedPreferences.getInstance();
+
+    // Intercept with local cache if data matches current operational hour
+    final String? cachedData = prefs.getString(cacheKey);
+    if (cachedData != null) {
+      currentMlReport = DisaggregationResponse.fromJson(jsonDecode(cachedData));
+      notifyListeners();
+      return;
+    }
+
+    isProcessingML = true;
+    errorMessage = null;
+    notifyListeners();
+
+    try {
+      // Developer Expectation: Fetches and parses payload directly from Cloud Run endpoint.
+      final response = await _mlService.fetchDisaggregation(
+        aggregateReadings: aggregateReadings,
+      );
+      
+      currentMlReport = response;
+      
+      // Checkpoint the response to reduce Cloud Run invocation costs
+      await prefs.setString(cacheKey, jsonEncode(response.toJson()));
+
+    } catch (e, stack) {
+      errorMessage = "Real-time disaggregation tracking failed.";
+      AppLog.error("ML Cloud Run Pipeline Fetch Failure", e, stack);
+      currentMlReport = null;
+    } finally {
+      isProcessingML = false;
+      notifyListeners();
+    }
+  }
+
+  @override
+  void dispose() {
+    _telemetrySub?.cancel();
+    super.dispose();
   }
 }

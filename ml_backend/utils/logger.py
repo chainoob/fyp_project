@@ -12,11 +12,20 @@ class AppLog:
 
     @staticmethod
     def error(context: str, detail: str):
-        # Developer Expectation: Emit to stderr channel to ensure Google Cloud captures appropriate ERROR metrics.
+        # Developer Expectation: Emit to stderr channel for Cloud logging detection.
         logger.error(f"Context: {context} | Detail: {detail}")
 
     @staticmethod
+    def warning(context: str, detail: str):
+        # Developer Expectation: Flag non-critical issues or configuration fallbacks.
+        logger.warning(f"Context: {context} | Detail: {detail}")
+
+    @staticmethod
     def info(context: str, detail: str):
-        # Developer Expectation: Conditional logging check for verbose execution logs.
-        if os.getenv("DEBUG", "true").lower() == "true":
-            logger.info(f"Context: {context} | Detail: {detail}")
+        # Developer Expectation: Standard operational logging.
+        logger.info(f"Context: {context} | Detail: {detail}")
+
+    @staticmethod
+    def debug(context: str, detail: str):
+        # Developer Expectation: High-verbosity diagnostic logs.
+        logger.debug(f"Context: {context} | Detail: {detail}")

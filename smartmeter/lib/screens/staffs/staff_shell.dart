@@ -99,11 +99,7 @@ class StaffDashboard extends StatelessWidget {
     String? selectedUnitId;
     bool localLoading = false;
 
-    // =========================================================================
-    // TODO: FETCH REAL DATA HERE
-    // =========================================================================
-    // In the future, fetch these lists from your 'blocks' and 'units' collections
-    // using a Provider or FutureBuilder.
+    // Roadmap Item 4: Implement dynamic block/unit fetching from Firestore collection groups.
     final List<String> demoBlocks = ['Block A', 'Block B', 'Block C'];
     final List<String> demoUnits = ['Unit 101', 'Unit 102', 'Unit 201', 'Unit 205'];
 
@@ -123,7 +119,7 @@ class StaffDashboard extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
 
-                  // --- A. BLOCK SELECTOR (UI ONLY) ---
+                  // Block Selector: UI context for targeted disaggregation.
                   DropdownButtonFormField<String>(
                     decoration: const InputDecoration(
                       labelText: "Block",
@@ -139,7 +135,7 @@ class StaffDashboard extends StatelessWidget {
                     onChanged: (val) {
                       setDialogState(() {
                         selectedBlockId = val;
-                        // TODO: When Block changes, fetch/filter real units for this block
+                        // Roadmap Item 4: Integrate reactive unit filtering based on block selection.
                         selectedUnitId = null; 
                       });
                     },
@@ -147,7 +143,7 @@ class StaffDashboard extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
 
-                  // --- B. UNIT SELECTOR (UI ONLY) ---
+                  // Unit Selector: Granular target for FHMM execution.
                   DropdownButtonFormField<String>(
                     decoration: const InputDecoration(
                       labelText: "Unit",
@@ -169,7 +165,7 @@ class StaffDashboard extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
 
-                  // --- C. CONSUMPTION INPUTS ---
+                  // Consumption Inputs: Telemetry seed for disaggregation.
                   TextField(
                     controller: kwhController,
                     keyboardType: TextInputType.number,
@@ -203,7 +199,7 @@ class StaffDashboard extends StatelessWidget {
                 onPressed: localLoading
                     ? null
                     : () async {
-                        // 1. Basic UI Validation
+                        // Basic UI Validation
                         if (selectedBlockId == null || selectedUnitId == null) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text("Please select a Block and Unit"), backgroundColor: Colors.red),
@@ -217,15 +213,8 @@ class StaffDashboard extends StatelessWidget {
                         // Simulate network delay
                         await Future.delayed(const Duration(seconds: 1));
 
-                        // =======================================================
-                        // TODO: IMPLEMENT BACKEND SUBMISSION LOGIC
-                        // =======================================================
-                        // 1. Verify 'selectedUnitId' exists in DB (if strict validation needed)
-                        // 2. Prepare Payload:
-                        //    double kwh = double.parse(kwhController.text);
-                        // 3. Call Service/Provider:
-                        //    await EnergyRepository().triggerDisaggregation(...)
-                        // =======================================================
+                        // Roadmap Item 4: Implement Cloud Function trigger via triggerDisaggregation() repo call.
+                        // Finalize payload mapping (kwh, month, year) before production release.
 
                         if (context.mounted) {
                           Navigator.pop(context);
@@ -255,7 +244,7 @@ class StaffDashboard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // --- TODO: INTEGRATION POINTS ---
+    // Roadmap Item 4: Bind campusLoadKw and dailyTotalKwh to the global telemetry stream.
     final double campusLoadKw = 0.0;
     final double dailyTotalKwh = 0.0;
     // --------------------------------

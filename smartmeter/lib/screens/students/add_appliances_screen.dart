@@ -39,7 +39,7 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
   bool _isProcessing = false;
   final ImagePicker _picker = ImagePicker();
   
-  // High-level: Instantiate localized computer vision instance for model execution lifecycle.
+  // Instantiate ClassifierService for image-based device identification.
   final ClassifierService _classifierService = ClassifierService();
 
   @override
@@ -47,7 +47,7 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
     _nameCtrl.dispose();
     _wattCtrl.dispose();
     _roomCtrl.dispose();
-    // Developer Expectation: Explicit disposal of edge model to release internal memory structures.
+    // Release tflite interpreter memory.
     _classifierService.dispose();
     super.dispose();
   }
@@ -77,10 +77,10 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
 
   Future<void> _processImage(File image) async {
     try {
-      // High-level: Direct matrix image stream into processing channel execution block.
+      // Execute inference channel for image classification.
       final String? detectedLabel = await _classifierService.classifyDeviceImage(image);
       
-      // Developer Expectation: Fallback to error routing string path when tensor confidence conditions fail.
+      // Handle null inference results with fallback routing.
       _applyAiResults(detectedLabel ?? "Prohibited/Unknown Asset");
     } catch (e) {
       debugPrint("Classification Processing Mismatch Exception: $e");

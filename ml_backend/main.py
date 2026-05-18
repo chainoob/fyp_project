@@ -1,14 +1,15 @@
 import logging
 import datetime
+import os
 from fastapi import FastAPI, HTTPException, Request, Depends
 from models.request_models import FeedbackRequest, OptimizationRequest, SyncRequest, DisaggregationRequest
 from services.firebase_client import FirebaseClient
 from services.simulator import AdaptiveBehavioralSimulator
 from services.optimizer import EnergyOptimizer
 from services.fhmm_service import FHMMService
+from services.weather_service import WeatherService
 from utils.response_formatter import format_api_response
 from utils.auth import verify_firebase_token, validate_user_ownership
-import traceback
 
 # Initialize logging for backend observability.
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +22,7 @@ db = FirebaseClient()
 simulator = AdaptiveBehavioralSimulator()
 optimizer = EnergyOptimizer()
 fhmm = FHMMService()
+weather = WeatherService()
 
 # Global exception handler for consistent error reporting across all endpoints.
 @app.exception_handler(Exception)
@@ -32,6 +34,27 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def root():
     # Service availability check for root path resolution.
     return {"status": "online", "message": "ML Backend Active"}
+
+@app.get("/api/v1/health")
+async def health_check():
+    # Diagnostic endpoint to verify secret resolution and service status.
+    weather_key_resolved = bool(weather.api_key)
+    
+    return {
+        "status": "healthy",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc),
+        "integrations": {
+            "weather_api": {
+                "status": "connected" if weather_key_resolved else "missing_key",
+                "source": getattr(weather, 'secret_source', 'none')
+            },
+            "firebase": {
+                "status": "initialized" if db.db else "error",
+                "source": getattr(db, 'credential_source', 'none')
+            }
+        },
+        "environment": "production" if os.getenv("K_SERVICE") else "development"
+    }
 
 @app.post("/api/v1/optimize")
 async def run_optimization(request: OptimizationRequest, token: dict = Depends(verify_firebase_token)):
@@ -45,7 +68,7 @@ async def run_optimization(request: OptimizationRequest, token: dict = Depends(v
             
         new_weights = optimizer.refine(appliances, request.actual_bill)
         
-        # Developer Expectation: Update Firestore with optimized prob_day/prob_night values.
+        # Sync optimized weights (prob_day/prob_night) to user Firestore document.
         db.update_appliance_weights(request.user_id, appliances, new_weights)
         return format_api_response(True, message="Weights optimized successfully")
     except ValueError as e:
@@ -56,44 +79,58 @@ async def run_optimization(request: OptimizationRequest, token: dict = Depends(v
 
 @app.post("/api/v1/disaggregate")
 async def process_telemetry(request: DisaggregationRequest, token: dict = Depends(verify_firebase_token)):
-    # Executes disaggregation pipeline and persists results to Firestore.
+    # Run disaggregation pipeline and persist results.
     try:
         validate_user_ownership(request.user_id, token["uid"])
         user_id = request.user_id
         logger.info(f"Running disaggregation for user: {user_id}")
         
-        # Validation for user appliance data existence in Firestore.
+        # Verify appliance registry exists for the target UID.
         registered_appliances = db.get_user_appliances(user_id) 
         if not registered_appliances:
             logger.warning(f"Aborting: No active appliances for user {user_id}")
             return format_api_response(False, message="No active appliances found. Add appliances to proceed.")
 
-        # TODO: Replace static context with dynamic data (Weather API/System Clock) for production.
-        # This is currently a testing placeholder to ensure simulator stability.
-        context = {
-            "temperature": 28,
-            "is_weekend": False,
-            "poll_iron_used_today": False
-        }
+        # Resolve environmental context via Weather API.
+        context = weather.get_contextual_data()
+        context["is_weekend"] = datetime.datetime.now().weekday() >= 5
+        context["poll_iron_used_today"] = False
         
+        # NILM Hybrid Logic: FHMM signal decoding + Monte Carlo behavioral benchmarking.
+        fhmm_results = fhmm.disaggregate(request.aggregate_readings)
         simulation_results = simulator.run_monte_carlo(registered_appliances, context)
         
-        # Guard clause for simulator dictionary key integrity to prevent KeyError.
+        # Validate simulation output integrity before payload construction.
         if 'hourly_profile' not in simulation_results or 'appliance_totals' not in simulation_results:
             logger.error(f"Simulator output missing keys for {user_id}: {simulation_results}")
             raise KeyError("Simulator failed to return 'hourly_profile' or 'appliance_totals'.")
+
+        # Map FHMM traces to registered appliance types.
+        registered_types = {app['type'] for app in registered_appliances.values()}
+        fhmm_breakdown = {
+            name: round(sum(power_series) / 1000.0, 3) 
+            for name, power_series in fhmm_results.items()
+            if name in registered_types
+        }
+
+        # Detect high-load unregistered signatures (>500W).
+        anomalies = [
+            name for name, power_series in fhmm_results.items()
+            if name not in registered_types and sum(power_series) > 500 
+        ]
         
         safe_hourly_usage = {str(k): float(v) for k, v in simulation_results['hourly_profile'].items()}
-        dynamic_breakdown = {name: float(val) for name, val in simulation_results['appliance_totals'].items()}
 
         now = datetime.datetime.now(datetime.timezone.utc)
         payload = {
             "userId": user_id, 
             "month": now.month,
             "year": now.year,
-            "estimated_load": sum(dynamic_breakdown.values()),
-            "breakdown": dynamic_breakdown,
-            "recommendations": generate_recommendations(dynamic_breakdown),
+            "estimated_load": sum(fhmm_breakdown.values()),
+            "breakdown": fhmm_breakdown,
+            "benchmark_breakdown": simulation_results['appliance_totals'],
+            "anomalies": anomalies,
+            "recommendations": generate_recommendations(fhmm_breakdown),
             "hourlyUsage": safe_hourly_usage,
             "timestamp": now 
         }
@@ -109,13 +146,13 @@ async def process_telemetry(request: DisaggregationRequest, token: dict = Depend
 
 @app.post("/api/v1/sync-daily")
 async def sync_daily_usage(request: SyncRequest, token: dict = Depends(verify_firebase_token)):
-    # Generates and persists high-fidelity 24-hour time-series data.
+    # Synchronize 24-hour time-series data to Firestore.
     try:
         validate_user_ownership(request.user_id, token["uid"])
         appliances = db.get_user_appliances(request.user_id)
         results = simulator.run_monte_carlo(appliances, request.context)
         
-        # Persists to the daily_usage subcollection for frontend charting.
+        # Update daily_usage subcollection for frontend rendering.
         db.save_daily_usage(request.user_id, results['hourly_profile'])
         return format_api_response(True, message="Daily sync complete")
     except Exception as e:
@@ -146,7 +183,7 @@ async def handle_feedback(request: FeedbackRequest, token: dict = Depends(verify
         app_data = user_apps.get(request.appliance_name)
 
         if not app_data:
-            return {"status": "error", "message": f"Appliance '{request.appliance_name}' not found."}
+            return format_api_response(False, message=f"Appliance '{request.appliance_name}' not found.", status_code=404)
 
         is_false_positive = (request.predicted_state and not request.actual_state)
         learning_rate = 0.05
@@ -155,6 +192,6 @@ async def handle_feedback(request: FeedbackRequest, token: dict = Depends(verify
         new_p = max(0.01, current_p - learning_rate) if is_false_positive else min(0.99, current_p + learning_rate)
         db.update_single_appliance_prob(request.user_id, request.appliance_name, new_p)
 
-        return {"status": "success", "new_probability": new_p}
+        return format_api_response(True, data={"new_probability": new_p})
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return format_api_response(False, message=str(e))

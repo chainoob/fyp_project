@@ -1,22 +1,44 @@
 {
   "Fan": {
     "states": [0, 40, 75],
-    "max_state_index": 2
+    "max_state_index": 2,
+    "std_dev": 2.5,
+    "type": "resistive",
+    "description": "REDD-distilled: Low/High fan states"
   },
   "Laptop": {
-    "states": [0, 65, 120],
-    "max_state_index": 2
+    "states": [0, 25, 65, 120],
+    "max_state_index": 3,
+    "std_dev": 5.0,
+    "type": "smps",
+    "description": "REDD-distilled: Idle/Standard/Heavy-Load laptop states"
   },
   "Kettle": {
-    "states": [0, 1500, 2000],
-    "max_state_index": 2
+    "states": [0, 1800, 2200],
+    "max_state_index": 2,
+    "std_dev": 15.0,
+    "type": "heating",
+    "description": "REDD-distilled: High-power thermal signature"
   },
   "Lamp": {
     "states": [0, 15, 30],
-    "max_state_index": 2
+    "max_state_index": 2,
+    "std_dev": 0.5,
+    "type": "resistive",
+    "description": "REDD-distilled: LED/Fluorescent states"
   },
   "Iron": {
-    "states": [0, 1000, 1200],
-    "max_state_index": 2
+    "states": [0, 800, 1200, 1500],
+    "max_state_index": 3,
+    "std_dev": 20.0,
+    "type": "thermal_cycling",
+    "description": "REDD-distilled: Cycling thermostat states"
+  },
+  "Fridge": {
+    "states": [5, 120, 250],
+    "max_state_index": 2,
+    "std_dev": 8.0,
+    "type": "inductive_cycling",
+    "description": "REDD-distilled: Standby/Compressor-ON/Defrost"
   }
 }

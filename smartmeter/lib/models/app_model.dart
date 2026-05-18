@@ -128,6 +128,8 @@ class EnergyReportData {
   final ReportKPIs kpis;
   final List<DailyUsagePoint> usageTrend;
   final Map<String, double> applianceBreakdown;
+  final Map<String, double> benchmarkBreakdown;
+  final List<String> anomalies;
   final Map<int, double> hourlyUsage;
   final Map<String, double> costBreakdown;
 
@@ -137,6 +139,8 @@ class EnergyReportData {
     required this.kpis,
     required this.usageTrend,
     required this.applianceBreakdown,
+    required this.benchmarkBreakdown,
+    required this.anomalies,
     required this.hourlyUsage,
     required this.costBreakdown,
   });
@@ -151,7 +155,9 @@ class EnergyReportData {
       usageTrend: (data['usageTrend'] as List<dynamic>? ?? [])
           .map((item) => DailyUsagePoint.fromMap(item))
           .toList(),
-      applianceBreakdown: Map<String, double>.from(data['applianceBreakdown'] ?? {}),
+      applianceBreakdown: Map<String, double>.from(data['breakdown'] ?? {}),
+      benchmarkBreakdown: Map<String, double>.from(data['benchmark_breakdown'] ?? {}),
+      anomalies: List<String>.from(data['anomalies'] ?? []),
       hourlyUsage: (data['hourlyUsage'] as Map<String, dynamic>? ?? {}).map(
         (key, value) => MapEntry(int.parse(key), (value as num).toDouble()),
       ),

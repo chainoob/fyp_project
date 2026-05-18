@@ -26,5 +26,5 @@ COPY . .
 # Expose production port
 EXPOSE 8080
 
-# Run FastAPI with uvicorn on port 8080
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Run FastAPI with Gunicorn and Uvicorn workers for production stability
+CMD ["gunicorn", "main:app", "--workers", "1", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8080"]
