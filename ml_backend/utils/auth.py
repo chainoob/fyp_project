@@ -38,10 +38,15 @@ async def verify_firebase_token(authorization: str = Header(None)):
         logger.error(f"Auth verification failed: {str(e)}")
         raise HTTPException(status_code=401, detail="Authentication failed.")
 
-def validate_user_ownership(request_user_id: str, token_uid: str):
+def validate_user_ownership(request_user_id: str, token_uid: str, is_staff: bool = False):
     """
     High-level: Assert cross-resource identity matches the token context.
+    Staff members bypass the ownership check to allow administrative access.
     """
+    if is_staff:
+        # Developer Expectation: Staff can access any resource (e.g., Campus overview).
+        return
+
     if request_user_id != token_uid:
         logger.warning(f"Security Alert: User {token_uid} attempted to access data for {request_user_id}")
         raise HTTPException(

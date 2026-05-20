@@ -1,4 +1,8 @@
+// smartmeter/lib/controllers/provider.dart
+
 import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter/material.dart';
 import 'package:smartmeter/models/app_model.dart';
@@ -6,10 +10,10 @@ import 'package:smartmeter/models/disaggregation_response.dart';
 import 'package:smartmeter/services/api_service.dart';
 import 'package:smartmeter/services/disaggregation_service.dart';
 import 'package:smartmeter/services/energy_repo.dart';
+import 'package:smartmeter/services/iot_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
-
 import 'package:smartmeter/utils/logger.dart';
 
 class AppAuthProvider extends ChangeNotifier {
@@ -25,6 +29,7 @@ class AppAuthProvider extends ChangeNotifier {
       _currentUser = user;
       if (user != null) {
         fetchUserRole();
+        initFcm();
       }
       notifyListeners();
     });
@@ -35,6 +40,29 @@ class AppAuthProvider extends ChangeNotifier {
   bool get loggedIn => _currentUser != null;
   bool get isStaff => _role == 'staff';
   bool get isLoading => _isLoading;
+
+  Future<void> initFcm() async {
+    if (_currentUser == null) return;
+
+    try {
+      FirebaseMessaging messaging = FirebaseMessaging.instance;
+      
+      NotificationSettings settings = await messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      if (settings.authorizationStatus == AuthorizationStatus.authorized) {
+        String? token = await messaging.getToken();
+        if (token != null) {
+          await _repo.saveFcmToken(_currentUser!.uid, token);
+        }
+      }
+    } catch (e, stack) {
+      AppLog.error("FCM Initialization", e, stack);
+    }
+  }
 
   Future<void> login(String email, String password) async {
     _isLoading = true;
@@ -90,8 +118,7 @@ class AppAuthProvider extends ChangeNotifier {
         await fetchUserRole();
         _pendingGoogleUser = null;
         notifyListeners();
-      }
-      else{
+      } else {
         _pendingGoogleUser = googleUser;
       }
       return userExists;
@@ -136,21 +163,15 @@ class AppAuthProvider extends ChangeNotifier {
   }
 }
 
-// smartmeter/lib/providers/appliance_provider.dart
-
 class ApplianceProvider extends ChangeNotifier {
   final EnergyRepository _repo;
   List<Appliance> _appliances = [];
-  
-  // Stores the mapped queue data for staff verification.
   List<MapEntry<String, Appliance>> _pendingQueue = [];
   StreamSubscription? _streamSub;
 
   ApplianceProvider(this._repo);
 
   List<Appliance> get appliances => _appliances;
-  
-  // Provides access to the grouped queue entries.
   List<MapEntry<String, Appliance>> get pendingQueue => _pendingQueue;
 
   final ApiService _apiService = ApiService();
@@ -168,13 +189,10 @@ class ApplianceProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // High-level: Dispatch asynchronous telemetry block to Cloud Run infrastructure.
       final data = await _apiService.triggerDisaggregation(
         userId: userId,
-        aggregateReadings: readings,
+        readings: readings, 
       );
-      
-      // Developer Expectation: Store raw data map locally or parse directly into model state here.
       _latestReportData = data;
     } catch (e) {
       _latestReportData = null;
@@ -186,7 +204,6 @@ class ApplianceProvider extends ChangeNotifier {
   }
 
   void subscribeToUser(String userId) {
-    // Synchronizes the local appliance list with the user's specific subcollection.
     _streamSub?.cancel();
     _streamSub = _repo.getAppliancesStream(userId).listen((data) {
       _appliances = data;
@@ -195,7 +212,6 @@ class ApplianceProvider extends ChangeNotifier {
   }
 
   void subscribeToQueue() {
-    // Listens to the global pending collection and stores the UID/Appliance pairs.
     _streamSub?.cancel();
     _streamSub = _repo.getPendingVerificationStream().listen((data) {
       _pendingQueue = data;
@@ -203,42 +219,36 @@ class ApplianceProvider extends ChangeNotifier {
     });
   }
 
-Future<void> add(String name, String type, int watts, String room) async {
-  // High-level: Auth check using your existing internal logic.
-  final user = FirebaseAuth.instance.currentUser;
-  if (user == null) throw Exception("User not logged in");
+  Future<void> add(String name, String type, int watts, String room) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw Exception("User not logged in");
 
-  final String safeUid = user.uid;
+    final String safeUid = user.uid;
+    final List<double> calculatedStates = (type == 'Fan') 
+        ? [0.0, watts * 0.6, watts.toDouble()] 
+        : [0.0, watts.toDouble()];
+        
+    final int calculatedMaxIndex = calculatedStates.length - 1;
 
-  // Developer Expectation: Calculate HMM profile locally to avoid backend bootstrap errors.
-  final List<double> calculatedStates = (type == 'Fan') 
-      ? [0.0, watts * 0.6, watts.toDouble()] 
-      : [0.0, watts.toDouble()];
-      
-  final int calculatedMaxIndex = calculatedStates.length - 1;
+    final newAppliance = Appliance(
+      id: '', 
+      name: name,
+      type: type,          
+      location: room,       
+      wattage: watts.toDouble(),
+      probDay: 0.1,
+      probNight: 0.1,
+      maxDurationHr: 1.0,
+      status: 'pending',     
+      states: calculatedStates,
+      maxStateIndex: calculatedMaxIndex,
+    );
 
-  final newAppliance = Appliance(
-    id: '', 
-    name: name,
-    type: type,           
-    location: room,       
-    wattage: watts.toDouble(),
-    probDay: 0.1,
-    probNight: 0.1,
-    maxDurationHr: 1.0,
-    status: 'pending',     
-    states: calculatedStates,
-    maxStateIndex: calculatedMaxIndex,
-  );
-
-  // High-level: Persist via your existing repository pattern.
-  await _repo.saveAppliance(safeUid, newAppliance);
-  
-  notifyListeners();
-}
+    await _repo.saveAppliance(safeUid, newAppliance);
+    notifyListeners();
+  }
 
   Future<void> delete(String userId, String appId) async {
-    // Removes the appliance from the database.
     await _repo.deleteAppliance(userId, appId);
   }
 
@@ -249,13 +259,11 @@ Future<void> add(String name, String type, int watts, String room) async {
       await _repo.updateApplianceStatus(userId, appId, 'rejected');
 
   Future<String> getStudentName(String uid) async {
-    // Resolves student UID to a display name or ID for staff views.
     return await _repo.getStudentDisplayId(uid);
   }
 
   @override
   void dispose() {
-    // Cleans up active streams to prevent memory leaks and redundant updates.
     _streamSub?.cancel();
     super.dispose();
   }
@@ -268,13 +276,11 @@ class GoalProvider with ChangeNotifier {
 
   double _target = 0;
   double _current = 0;
-  
   bool _isCampusMode = false; 
   String? _currentUserId;
 
   double get target => _target;
   double get current => _current;
-  
   double get progress => _target > 0 ? (_current / _target).clamp(0.0, 1.0) : 0.0;
   bool get isOverBudget => _target > 0 && _current > _target;
 
@@ -398,33 +404,51 @@ class EnergyProvider extends ChangeNotifier {
   EnergyReportData? currentReport;
   DisaggregationResponse? currentMlReport;
   
-  // Real-time telemetry buffer
-  List<double> _liveReadings = [];
+  final List<double> _liveReadings = [];
+  IoTTelemetrySource? _iotSource;
   StreamSubscription? _telemetrySub;
+  StreamSubscription? _statusSub;
+  StreamSubscription? _asyncPipelineSub; 
 
   bool isLoading = true;
   bool isProcessingAI = false;
   bool isProcessingML = false;
+  bool isConnected = false;
   String? errorMessage;
 
   EnergyProvider(this._repository);
 
   List<double> get liveReadings => _liveReadings;
+  Map<String, double> get applianceBreakdown => currentMlReport?.data.breakdown ?? {};
 
   void subscribeToTelemetry(String userId) {
     _telemetrySub?.cancel();
-    _telemetrySub = _repository.getLiveReadingsStream(userId).listen((readings) {
-      _liveReadings = readings;
+    _statusSub?.cancel();
+    _iotSource?.dispose();
+
+    // High-level: Initialize the IoT source wrapper for the target user.
+    _iotSource = FirebaseTelemetrySource(
+      userId, 
+      _repository.getLiveReadingsStream(userId)
+    );
+
+    _statusSub = _iotSource!.connectionStatus.listen((status) {
+      isConnected = status;
+      notifyListeners();
+    });
+
+    _telemetrySub = _iotSource!.wattageStream.listen((wattage) {
+      // Maintain a sliding window of the last 10 readings for contextual smoothing.
+      if (_liveReadings.length >= 10) _liveReadings.removeAt(0);
+      _liveReadings.add(wattage);
       notifyListeners();
       
-      // Auto-trigger ML analysis if we have enough live data
       if (_liveReadings.length >= 4) {
         fetchRealTimeDisaggregation(aggregateReadings: _liveReadings);
       }
     });
   }
 
-  // Read Pipeline
   Future<void> loadReport({
     required String scope,
     required int month,
@@ -447,13 +471,12 @@ class EnergyProvider extends ChangeNotifier {
     } catch (e) {
       errorMessage = e.toString();
       currentReport = null;
-    } finally {
+    } finally { 
       isLoading = false;
       notifyListeners();
     }
   }
 
-  // Cloud Function Async Execution Pipeline
   Future<void> runDisaggregation(
     String userId, 
     String billId, 
@@ -464,29 +487,58 @@ class EnergyProvider extends ChangeNotifier {
   }) async {
     isProcessingAI = true;
     errorMessage = null;
-    notifyListeners();
+    notifyListeners(); 
 
     try {
       final context = {
         'billId': billId,
         'totalBill': totalBill,
-        'month': month.toString(),
-        'year': year,
+        'month': month, // Fixed: Passed as int to preserve schema type safety
+        'year': year,   // Passed as int
         'scope': scope,
         'trainModel': false, 
       };
 
+      _asyncPipelineSub?.cancel();
+      
+      _asyncPipelineSub = FirebaseFirestore.instance
+          .collection('disaggregation_results')
+          .where('userId', isEqualTo: userId)
+          .where('month', isEqualTo: month)
+          .where('year', isEqualTo: year)
+          .snapshots()
+          .listen((snapshot) async {
+            if (snapshot.docs.isNotEmpty) {
+              _asyncPipelineSub?.cancel(); 
+              
+              await loadReport(
+                scope: scope,
+                month: month,
+                year: year,
+                unitId: userId,
+              );
+              
+              isProcessingAI = false;
+              notifyListeners();
+            }
+          }, onError: (error) {
+            isProcessingAI = false;
+            errorMessage = "Data pipeline synchronization dropped.";
+            notifyListeners();
+          });
+
       await _repository.triggerDisaggregation(userId, context);
+      
     } catch (e, stack) {
-      errorMessage = "AI Execution Failed: See logs for details.";
-      AppLog.error("Disaggregation Trigger", e, stack);
-    } finally {
+      _asyncPipelineSub?.cancel();
       isProcessingAI = false;
+      errorMessage = e.toString();
+      AppLog.error("Disaggregation Trigger Error", e, stack);
       notifyListeners();
+      rethrow;
     }
   }
 
-  // Live Machine Learning Optimization Pipeline
   Future<void> fetchRealTimeDisaggregation({
     required List<double> aggregateReadings,
   }) async {
@@ -496,7 +548,6 @@ class EnergyProvider extends ChangeNotifier {
     final String cacheKey = "ml_cache_${user.uid}_${DateTime.now().hour}";
     final prefs = await SharedPreferences.getInstance();
 
-    // Intercept with local cache if data matches current operational hour
     final String? cachedData = prefs.getString(cacheKey);
     if (cachedData != null) {
       currentMlReport = DisaggregationResponse.fromJson(jsonDecode(cachedData));
@@ -509,16 +560,12 @@ class EnergyProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Developer Expectation: Fetches and parses payload directly from Cloud Run endpoint.
       final response = await _mlService.fetchDisaggregation(
         aggregateReadings: aggregateReadings,
       );
       
       currentMlReport = response;
-      
-      // Checkpoint the response to reduce Cloud Run invocation costs
       await prefs.setString(cacheKey, jsonEncode(response.toJson()));
-
     } catch (e, stack) {
       errorMessage = "Real-time disaggregation tracking failed.";
       AppLog.error("ML Cloud Run Pipeline Fetch Failure", e, stack);
@@ -529,7 +576,6 @@ class EnergyProvider extends ChangeNotifier {
     }
   }
 
-  // Cloud Run Feedback Integration
   Future<void> submitFeedback({
     required String userId,
     required String applianceName,
@@ -552,6 +598,7 @@ class EnergyProvider extends ChangeNotifier {
   @override
   void dispose() {
     _telemetrySub?.cancel();
+    _asyncPipelineSub?.cancel();
     super.dispose();
   }
 }

@@ -1,13 +1,11 @@
+// smartmeter/lib/screens/staffs/manage_report.dart
+
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:smartmeter/config/theme.dart';
 import 'package:smartmeter/controllers/provider.dart';
 import 'package:smartmeter/models/app_model.dart';
-
-// =============================================================================
-// 1. REPORT CONFIGURATION PAGE
-// =============================================================================
 
 class StaffReportsPage extends StatefulWidget {
   const StaffReportsPage({super.key});
@@ -17,12 +15,10 @@ class StaffReportsPage extends StatefulWidget {
 }
 
 class _StaffReportsPageState extends State<StaffReportsPage> {
-  // --- UI SELECTION STATE ---
   String _selectedScope = 'Campus';
   int _selectedMonth = DateTime.now().month;
   int _selectedYear = DateTime.now().year;
 
-  // Selection Objects
   String? _selectedBlockId;
   String? _selectedUnitId;
 
@@ -80,7 +76,6 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          // CONFIGURATION CARD
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -94,7 +89,6 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
                 const Text("Report Parameters", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
                 const SizedBox(height: 20),
 
-                // Scope
                 DropdownButtonFormField<String>(
                   initialValue: _selectedScope,
                   decoration: _inputDecor("Report Scope", Icons.radar),
@@ -112,7 +106,6 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
                 ),
                 const SizedBox(height: 16),
 
-                // Block Selector
                 if (_selectedScope != 'Campus')
                   DropdownButtonFormField<String>(
                     initialValue: _selectedBlockId,
@@ -131,7 +124,6 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
                     },
                   ),
 
-                // Unit Selector
                 if (_selectedScope == 'Unit' && _selectedBlockId != null) ...[
                   const SizedBox(height: 16),
                   DropdownButtonFormField<String>(
@@ -149,7 +141,6 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
 
                 const SizedBox(height: 16),
 
-                // Date Selectors
                 Row(
                   children: [
                     Expanded(
@@ -233,10 +224,6 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
   }
 }
 
-// =============================================================================
-// 2. GENERATED REPORT SCREEN
-// =============================================================================
-
 class GeneratedReportScreen extends StatelessWidget {
   final EnergyReportData data;
   final String scope;
@@ -262,7 +249,6 @@ class GeneratedReportScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // --- 1.1 MANAGEMENT SUMMARY ---
           _buildSectionHeader("1.1 Management Summary"),
           Card(
             elevation: 2,
@@ -277,25 +263,30 @@ class GeneratedReportScreen extends StatelessWidget {
                   _buildSummaryRow("Total Cost", "RM ${data.summary.totalCost.toStringAsFixed(2)}"),
                   const Divider(height: 24),
                   const Text("Key Issue:", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
-                  Text(data.summary.keyIssue, style: const TextStyle(fontSize: 13)),
+                  Text(data.summary.keyIssue.isEmpty ? "No operational anomalies identified." : data.summary.keyIssue, style: const TextStyle(fontSize: 13)),
                   const SizedBox(height: 12),
                   const Text("Recommended Actions:", style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.ecoTeal)),
-                  ...data.summary.recommendations.map((r) => Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text("• ", style: TextStyle(fontWeight: FontWeight.bold)),
-                        Expanded(child: Text(r, style: const TextStyle(fontSize: 13))),
-                      ],
-                    ),
-                  )),
+                  if (data.summary.recommendations.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text("Maintain standard baseline optimization tracking.", style: TextStyle(fontSize: 13, color: Colors.grey)),
+                    )
+                  else
+                    ...data.summary.recommendations.map((r) => Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text("• ", style: TextStyle(fontWeight: FontWeight.bold)),
+                          Expanded(child: Text(r, style: const TextStyle(fontSize: 13))),
+                        ],
+                      ),
+                    )),
                 ],
               ),
             ),
           ),
 
-          // --- 1.2 KEY PERFORMANCE INDICATORS ---
           const SizedBox(height: 24),
           _buildSectionHeader("1.2 Key Performance Indicators (KPIs)"),
           GridView.count(
@@ -313,7 +304,6 @@ class GeneratedReportScreen extends StatelessWidget {
             ],
           ),
 
-          // --- 1.3 ENERGY USAGE OVERVIEW (IMPROVED BAR CHART) ---
           const SizedBox(height: 24),
           _buildSectionHeader("1.3 Energy Usage Overview"),
           Container(
@@ -344,60 +334,61 @@ class GeneratedReportScreen extends StatelessWidget {
             ),
           ),
 
-          // --- 1.4 ENERGY BREAKDOWN ---
           const SizedBox(height: 24),
           _buildSectionHeader("1.4 Energy Breakdown"),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
-              child: Column(
-                children: data.applianceBreakdown.entries.map((entry) {
-                  final percent = entry.value / data.kpis.totalKwh;
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              child: data.applianceBreakdown.isEmpty 
+                ? const Center(child: Padding(padding: EdgeInsets.all(16), child: Text("No appliance signature metrics mapped.", style: TextStyle(color: Colors.grey, fontSize: 13))))
+                : Column(
+                    children: data.applianceBreakdown.entries.map((entry) {
+                      final double baselineTotal = data.kpis.totalKwh > 0 ? data.kpis.totalKwh : 1.0;
+                      final percent = entry.value / baselineTotal;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(entry.key, style: const TextStyle(fontWeight: FontWeight.w600)),
-                            Text("${(percent * 100).toStringAsFixed(1)}%", style: const TextStyle(fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Stack(
-                          children: [
-                            Container(
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: Colors.grey[200],
-                                borderRadius: BorderRadius.circular(4),
-                              ),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(entry.key, style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.black)),
+                                Text("${(percent * 100).toStringAsFixed(1)}%", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
+                              ],
                             ),
-                            FractionallySizedBox(
-                              widthFactor: percent.clamp(0.0, 1.0),
-                              child: Container(
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  color: _getColorForAppliance(entry.key),
-                                  borderRadius: BorderRadius.circular(4),
+                            const SizedBox(height: 6),
+                            Stack(
+                              children: [
+                                Container(
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: Colors.grey[200],
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
                                 ),
-                              ),
+                                FractionallySizedBox(
+                                  widthFactor: percent.clamp(0.0, 1.0),
+                                  child: Container(
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      color: _getColorForAppliance(entry.key),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
+                            const SizedBox(height: 4),
+                            Text("${entry.value.toStringAsFixed(1)} kWh", style: const TextStyle(fontSize: 11, color: Colors.grey)),
                           ],
                         ),
-                        const SizedBox(height: 4),
-                        Text("${entry.value.toStringAsFixed(1)} kWh", style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                      ],
-                    ),
-                  );
-                }).toList(),
-              ),
+                      );
+                    }).toList(),
+                  ),
             ),
           ),
 
-          // --- 1.5 PEAK USAGE & HOURLY ANALYSIS (IMPROVED LINE CHART) ---
           const SizedBox(height: 24),
           _buildSectionHeader("1.5 Peak Usage Analysis (24h)"),
           Container(
@@ -435,7 +426,6 @@ class GeneratedReportScreen extends StatelessWidget {
             ),
           ),
 
-          // --- 1.6 COST IMPACT ---
           const SizedBox(height: 24),
           _buildSectionHeader("1.6 Cost Impact"),
           Container(
@@ -451,7 +441,7 @@ class GeneratedReportScreen extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text("RM ${data.kpis.totalCost.toStringAsFixed(2)}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 24)),
+                    Text("RM ${data.kpis.totalCost.toStringAsFixed(2)}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 24, color: Colors.black)),
                     const Text("Estimated Monthly Cost", style: TextStyle(fontSize: 12, color: Colors.grey)),
                   ],
                 ),
@@ -466,8 +456,6 @@ class GeneratedReportScreen extends StatelessWidget {
       ),
     );
   }
-
-  // --- UI HELPERS ---
 
   Widget _buildSectionHeader(String title) {
     return Padding(
@@ -533,10 +521,6 @@ class GeneratedReportScreen extends StatelessWidget {
   }
 }
 
-// =============================================================================
-// 3. CUSTOM PAINTERS (FOR CHARTING)
-// =============================================================================
-
 class BarChartPainter extends CustomPainter {
   final List<double> data;
   final List<String> labels;
@@ -552,18 +536,19 @@ class BarChartPainter extends CustomPainter {
     required this.threshold,
   });
 
-  @override
+ @override
   void paint(Canvas canvas, Size size) {
     if (data.isEmpty) return;
 
-    final double maxVal = data.reduce(max) * 1.1; // Add 10% headroom
+    final double rawMax = data.reduce(max);
+    final double maxVal = rawMax > 0 ? rawMax * 1.1 : 1.0; 
+    
     final double barWidth = (size.width / data.length) * 0.6;
     final double spacing = (size.width / data.length) * 0.4;
     
-    final paint = Paint()..style = PaintingStyle.fill;
-
-    // Draw grid lines
-    final gridPaint = Paint()
+    final Paint paint = Paint()..style = PaintingStyle.fill;
+    
+    final Paint gridPaint = Paint()
       ..color = Colors.grey.withValues(alpha: 0.2)
       ..strokeWidth = 1;
     
@@ -576,10 +561,8 @@ class BarChartPainter extends CustomPainter {
       final double left = i * (barWidth + spacing);
       final double top = size.height - barHeight;
 
-      // Color logic: High usage gets accent color
       paint.color = val > threshold ? accentColor : barColor;
 
-      // Draw rounded rect bar
       final RRect bar = RRect.fromRectAndRadius(
         Rect.fromLTWH(left, top, barWidth, barHeight),
         const Radius.circular(3),
@@ -607,37 +590,34 @@ class LineChartPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (data.isEmpty) return;
     
-    final double maxVal = data.reduce(max) * 1.2;
+    final double rawMax = data.reduce(max);
+    // Zero-value protection guard
+    final double maxVal = rawMax > 0 ? rawMax * 1.2 : 1.0;
     final double stepX = size.width / (data.length - 1);
     
     final path = Path();
     final fillPath = Path();
     
-    // Start path
     path.moveTo(0, size.height - (data[0] / maxVal) * size.height);
-    fillPath.moveTo(0, size.height); // Bottom left
+    fillPath.moveTo(0, size.height); 
     fillPath.lineTo(0, size.height - (data[0] / maxVal) * size.height);
 
     for (int i = 1; i < data.length; i++) {
       final double x = i * stepX;
       final double y = size.height - (data[i] / maxVal) * size.height;
       
-      // Simple straight line connection (for hourly data, curves can be misleading if not interpolated perfectly)
       path.lineTo(x, y);
       fillPath.lineTo(x, y);
     }
 
-    // Close fill path
     fillPath.lineTo(size.width, size.height);
     fillPath.close();
 
-    // Draw Fill
     final fillPaint = Paint()
       ..color = fillColor
       ..style = PaintingStyle.fill;
     canvas.drawPath(fillPath, fillPaint);
 
-    // Draw Line
     final linePaint = Paint()
       ..color = lineColor
       ..strokeWidth = 2.5
@@ -646,10 +626,8 @@ class LineChartPainter extends CustomPainter {
       ..strokeJoin = StrokeJoin.round;
     canvas.drawPath(path, linePaint);
 
-    // Draw Dots
     final dotPaint = Paint()..color = lineColor;
     for (int i = 0; i < data.length; i++) {
-      // Only draw dots for key hours (every 6 hours) to reduce clutter
       if (i % 6 == 0) {
         final double x = i * stepX;
         final double y = size.height - (data[i] / maxVal) * size.height;

@@ -322,14 +322,14 @@ class ManageRoomsScreen extends StatefulWidget {
 }
 
 class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
-    CollectionReference get _roomsRef =>
-    FirebaseFirestore.instance
-        .collection('blocks').doc(widget.blockId)
-        .collection('units').doc(widget.unitId)
-        .collection('rooms');
+  CollectionReference get _roomsRef =>
+      FirebaseFirestore.instance
+          .collection('blocks').doc(widget.blockId)
+          .collection('units').doc(widget.unitId)
+          .collection('rooms');
 
-    Future<Map<String, dynamic>?> _showStudentSearchSheet() async {
-      return await showModalBottomSheet<Map<String, dynamic>>(
+  Future<Map<String, dynamic>?> _showStudentSearchSheet() async {
+    return await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
       isScrollControlled: true,
       backgroundColor: AppTheme.surface,
@@ -370,7 +370,6 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
                   const SizedBox(height: 24),
                   const Align(alignment: Alignment.centerLeft, child: Text("Occupant", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey))),
                   const SizedBox(height: 8),
-                  
                   InkWell(
                     onTap: () async {
                       final result = await _showStudentSearchSheet();
@@ -440,10 +439,6 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
     );
   }
 
-  /// Displays the room management interface and bill submission panel.
-  /// Iterates through rooms to identify the assigned student and binds 
-  /// the bill submission card to that student's identity.
-
   Future<void> _deleteRoom(DocumentSnapshot room) async {
     await room.reference.delete();
   }
@@ -483,7 +478,8 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
                 Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: BillSubmissionCard(
-                    userId: targetStudentId,
+                    // Fixed: Pass the student UID to anchor telemetry lookup.
+                    userId: targetStudentId, 
                     blockId: widget.blockId,
                   ),
                 )

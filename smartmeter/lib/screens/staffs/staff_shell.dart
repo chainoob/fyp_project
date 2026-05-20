@@ -1,3 +1,5 @@
+// smartmeter/lib/screens/staffs/staff_shell.dart
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:smartmeter/controllers/provider.dart';
@@ -30,6 +32,7 @@ class _StaffShellState extends State<StaffShell> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<ApplianceProvider>().subscribeToQueue();
       context.read<GoalProvider>().subscribeToCampus();
+      context.read<EnergyProvider>().subscribeToTelemetry('campus');
     });
   }
 
@@ -85,174 +88,26 @@ class _StaffShellState extends State<StaffShell> {
   }
 }
 
-// --- 1. STAFF DASHBOARD ---
 class StaffDashboard extends StatelessWidget {
   const StaffDashboard({super.key});
 
-  // --- LOGIC: SHOW ADD BILL DIALOG ---
-  void _showAddBillDialog(BuildContext context) {
-    final kwhController = TextEditingController();
-    final costController = TextEditingController();
-
-    // Local state for UI selection
-    String? selectedBlockId;
-    String? selectedUnitId;
-    bool localLoading = false;
-
-    // Roadmap Item 4: Implement dynamic block/unit fetching from Firestore collection groups.
-    final List<String> demoBlocks = ['Block A', 'Block B', 'Block C'];
-    final List<String> demoUnits = ['Unit 101', 'Unit 102', 'Unit 201', 'Unit 205'];
-
-    showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          return AlertDialog(
-            title: const Text("Upload Monthly Bill"),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text(
-                    "Select the target Block/Unit and enter total consumption. Data will be used for AI Disaggregation.",
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Block Selector: UI context for targeted disaggregation.
-                  DropdownButtonFormField<String>(
-                    decoration: const InputDecoration(
-                      labelText: "Block",
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.apartment),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                    ),
-                    value: selectedBlockId,
-                    items: demoBlocks.map((b) => DropdownMenuItem(
-                      value: b,
-                      child: Text(b),
-                    )).toList(),
-                    onChanged: (val) {
-                      setDialogState(() {
-                        selectedBlockId = val;
-                        // Roadmap Item 4: Integrate reactive unit filtering based on block selection.
-                        selectedUnitId = null; 
-                      });
-                    },
-                    validator: (v) => v == null ? "Required" : null,
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Unit Selector: Granular target for FHMM execution.
-                  DropdownButtonFormField<String>(
-                    decoration: const InputDecoration(
-                      labelText: "Unit",
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.door_front_door),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                    ),
-                    value: selectedUnitId,
-                    items: demoUnits.map((u) => DropdownMenuItem(
-                      value: u,
-                      child: Text(u),
-                    )).toList(),
-                    onChanged: (val) {
-                      setDialogState(() => selectedUnitId = val);
-                    },
-                    // Disable if no block selected
-                    hint: const Text("Select Unit"),
-                    disabledHint: const Text("Select Block First"),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Consumption Inputs: Telemetry seed for disaggregation.
-                  TextField(
-                    controller: kwhController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: "Total Consumption (kWh)",
-                      suffixText: "kWh",
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.flash_on),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: costController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: "Total Cost (RM)",
-                      prefixText: "RM ",
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.attach_money),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text("Cancel"),
-              ),
-              ElevatedButton(
-                onPressed: localLoading
-                    ? null
-                    : () async {
-                        // Basic UI Validation
-                        if (selectedBlockId == null || selectedUnitId == null) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text("Please select a Block and Unit"), backgroundColor: Colors.red),
-                          );
-                          return;
-                        }
-                        if (kwhController.text.isEmpty || costController.text.isEmpty) return;
-
-                        setDialogState(() => localLoading = true);
-
-                        // Simulate network delay
-                        await Future.delayed(const Duration(seconds: 1));
-
-                        // Roadmap Item 4: Implement Cloud Function trigger via triggerDisaggregation() repo call.
-                        // Finalize payload mapping (kwh, month, year) before production release.
-
-                        if (context.mounted) {
-                          Navigator.pop(context);
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text("UI Test: Analysis for $selectedUnitId Triggered (Logic Pending)"),
-                              backgroundColor: AppTheme.ecoTeal,
-                            )
-                          );
-                        }
-                      },
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.ecoTeal, foregroundColor: Colors.white),
-                child: localLoading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : const Text("Analyze Bill"),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    // Roadmap Item 4: Bind campusLoadKw and dailyTotalKwh to the global telemetry stream.
-    final double campusLoadKw = 0.0;
-    final double dailyTotalKwh = 0.0;
-    // --------------------------------
+    final energyProvider = context.watch<EnergyProvider>();
+    final List<double> aggregateReadings = energyProvider.liveReadings;
+    
+    final double campusLoadKw = aggregateReadings.isNotEmpty ? aggregateReadings.last / 1000.0 : 0.0;
+    final bool isLive = energyProvider.isConnected;
+
+    final goalProvider = context.watch<GoalProvider>();
+    final double totalUsageKwh = goalProvider.current;
+
+    final Map<String, double> breakdown = energyProvider.applianceBreakdown;
+    final List<String> anomalies = energyProvider.currentMlReport?.data.anomalies ?? [];
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // A. Real-Time Monitor
         Container(
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
@@ -279,86 +134,65 @@ class StaffDashboard extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                        color: campusLoadKw > 0 ? Colors.redAccent.withValues(alpha: 0.2) : Colors.grey.withValues(alpha: 0.2),
+                        color: isLive ? Colors.greenAccent.withValues(alpha: 0.2) : Colors.grey.withValues(alpha: 0.2),
                         borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: campusLoadKw > 0 ? Colors.redAccent.withValues(alpha: 0.5) : Colors.grey)),
+                        border: Border.all(color: isLive ? Colors.greenAccent.withValues(alpha: 0.5) : Colors.grey)),
                     child: Row(
                       children: [
-                        Icon(Icons.circle, size: 8, color: campusLoadKw > 0 ? Colors.redAccent : Colors.grey),
+                        Icon(Icons.circle, size: 8, color: isLive ? Colors.greenAccent : Colors.grey),
                         const SizedBox(width: 6),
-                        Text(campusLoadKw > 0 ? "LIVE" : "OFFLINE",
-                            style: TextStyle(color: campusLoadKw > 0 ? Colors.redAccent : Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
+                        Text(isLive ? "IoT ONLINE" : "OFFLINE",
+                            style: TextStyle(color: isLive ? Colors.greenAccent : Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
                       ],
                     ),
                   )
                 ],
               ),
               const SizedBox(height: 12),
-              Text("${campusLoadKw.toStringAsFixed(1)} kW",
+              Text("${campusLoadKw.toStringAsFixed(2)} kW",
                   style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Colors.white)),
               const SizedBox(height: 8),
               Row(
                 children: [
                   const Icon(Icons.history, color: Colors.white54, size: 16),
                   const SizedBox(width: 4),
-                  Text("Total Today: ${dailyTotalKwh.toStringAsFixed(0)} kWh", style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                  Text("Total Accumulated: ${totalUsageKwh.toStringAsFixed(0)} kWh", style: const TextStyle(color: Colors.white70, fontSize: 13)),
                 ],
               ),
             ],
           ),
         ),
 
+        if (anomalies.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 20),
+              SizedBox(width: 8),
+              Text("Recent System Alerts", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ...anomalies.map((a) => _AnomalyTile(message: a)).toList(),
+        ],
+
+        if (breakdown.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          const Text("Detected Appliance Profiles", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
+          const SizedBox(height: 12),
+          ...breakdown.entries.map((e) => _ApplianceUsageTile(name: e.key, value: e.value)).toList(),
+        ],
+
         const SizedBox(height: 24),
         const Text("Energy Plan & Alerts", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
         const SizedBox(height: 12),
 
-        // Energy Goal Card
         const EnergyGoalCard(title: "Campus Monthly Plan"),
-
-        // --- UPLOAD BILL CARD ---
-        const SizedBox(height: 12),
-        Material(
-          color: Colors.white,
-          elevation: 2,
-          borderRadius: BorderRadius.circular(12),
-          child: InkWell(
-            onTap: () => _showAddBillDialog(context),
-            borderRadius: BorderRadius.circular(12),
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.orangeAccent.withValues(alpha: 0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.receipt_long, color: Colors.orange),
-                  ),
-                  const SizedBox(width: 16),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text("Upload Monthly Bill", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
-                        Text("Trigger AI analysis for Block/Unit", style: TextStyle(color: Colors.grey, fontSize: 12)),
-                      ],
-                    ),
-                  ),
-                  const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
-                ],
-              ),
-            ),
-          ),
-        ),
-        // -----------------------------
 
         const SizedBox(height: 24),
         const Text("Infrastructure", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
         const SizedBox(height: 12),
 
-        // Manage Blocks
         Material(
           color: Colors.white,
           elevation: 2,
@@ -367,7 +201,7 @@ class StaffDashboard extends StatelessWidget {
             onTap: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (context) => const ManageBlocksScreen()),
+                MaterialPageRoute(builder: (context) => const ManageBlocksScreen()), 
               );
             },
             borderRadius: BorderRadius.circular(12),
@@ -402,5 +236,78 @@ class StaffDashboard extends StatelessWidget {
         const SizedBox(height: 40),
       ],
     );
+  }
+}
+
+class _AnomalyTile extends StatelessWidget {
+  final String message;
+  const _AnomalyTile({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.orange.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.bolt, color: Colors.orange, size: 16),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              "Anomaly: High-load unregistered $message detected.",
+              style: const TextStyle(color: Colors.orange, fontSize: 13, fontWeight: FontWeight.w500),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ApplianceUsageTile extends StatelessWidget {
+  final String name;
+  final double value;
+
+  const _ApplianceUsageTile({required this.name, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Icon(_getIconForAppliance(name), color: AppTheme.ecoTeal),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            Text("${value.toStringAsFixed(3)} kWh", 
+              style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.navyBlue)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _getIconForAppliance(String name) {
+    switch (name.toLowerCase()) {
+      case 'fan': return Icons.air;
+      case 'light': return Icons.lightbulb_outline;
+      case 'kettle': return Icons.coffee;
+      case 'laptop': return Icons.laptop;
+      default: return Icons.electrical_services;
+    }
   }
 }

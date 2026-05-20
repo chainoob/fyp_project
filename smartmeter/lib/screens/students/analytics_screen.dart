@@ -1,3 +1,5 @@
+// smartmeter/lib/screens/shared/analytics_screen.dart
+
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -19,7 +21,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   final Color _cardDark = const Color(0xFF1E1E1E);    
   final Color _textPrimary = Colors.white;            
   final Color _textSecondary = Colors.white54;        
-  final Color _cCyan = const Color(0xFF00E5FF);         
+  final Color _cCyan = const Color(0xFF00E5FF);        
 
   @override
   void initState() {
@@ -30,19 +32,24 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   void _loadRealData() {
-    final user = context.read<AppAuthProvider>().currentUser;
+    final authProvider = context.read<AppAuthProvider>();
+    final user = authProvider.currentUser;
+    
     if (user != null) {
+      // Developer Expectation: Extract physical unit relationship bound to the student metadata profile
+      final String structuralUnitId = user.uid; 
+
       context.read<EnergyProvider>().loadReport(
         scope: 'Unit',
         month: _selectedDate.month,
         year: _selectedDate.year,
-        unitId: user.uid, 
+        unitId: structuralUnitId, 
       );
 
-      // Hook into real-time telemetry hardware listeners via Firestore
-      context.read<EnergyProvider>().subscribeToTelemetry(user.uid);
+      context.read<EnergyProvider>().subscribeToTelemetry(structuralUnitId);
     }
   }
+
   void _changeMonth(int offset) {
     setState(() {
       _selectedDate = DateTime(_selectedDate.year, _selectedDate.month + offset);
@@ -68,13 +75,14 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   Widget _buildBody(EnergyProvider provider) {
-    if (provider.isLoading || provider.isProcessingML) {
+    if (provider.isLoading || provider.isProcessingAI) {
       return Center(child: CircularProgressIndicator(color: _cCyan));
     }
 
-    final mlReport = provider.currentMlReport?.data;
+    // Fixed: Bind ingestion logic directly to the unified structural report container
+    final report = provider.currentReport;
 
-    if (mlReport == null) {
+    if (report == null) {
       return Column(
         children: [
           _buildMonthSelector(),
@@ -99,27 +107,26 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           _buildMonthSelector(),
           const SizedBox(height: 24),
 
-          if (mlReport.anomalies.isNotEmpty) ...[
-            _buildAnomaliesCard(mlReport.anomalies),
+          if (report.anomalies.isNotEmpty) ...[
+            _buildAnomaliesCard(report.anomalies),
             const SizedBox(height: 24),
           ],
 
           _buildSectionTitle("AI Prediction Verification"),
           const SizedBox(height: 12),
-          _buildFeedbackCard(mlReport.breakdown.keys.toList()),
+          _buildFeedbackCard(report.applianceBreakdown.keys.toList()), // Fixed model path
           const SizedBox(height: 24),
-          const SizedBox(height: 12),
           _buildBreakdownCard(
-            mlReport.estimatedLoad,
-            mlReport.breakdown.entries.toList(),
-            mlReport.recommendations.isNotEmpty ? mlReport.recommendations.first : "Consumption within typical parameters.",
-            mlReport.benchmarkBreakdown,
+            report.summary.totalConsumption, 
+            report.applianceBreakdown.entries.toList(), 
+            report.summary.keyIssue.isNotEmpty ? report.summary.keyIssue : "Consumption within typical parameters.",
+            report.benchmarkBreakdown,
           ),
           
           const SizedBox(height: 24),
           _buildSectionTitle("24h Load Profile"),
           const SizedBox(height: 12),
-          _buildHourlyTrendCard(mlReport.hourlyUsage),
+          _buildHourlyTrendCard(report.hourlyUsage),
         ],
       ),
     );
@@ -199,7 +206,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           ),
           IconButton(
             icon: Icon(Icons.chevron_right, color: _textPrimary),
-            onPressed: _selectedDate.month == DateTime.now().month ? null : () => _changeMonth(1),
+            onPressed: _selectedDate.month == DateTime.now().month && _selectedDate.year == DateTime.now().year ? null : () => _changeMonth(1),
           ),
         ],
       ),
@@ -253,36 +260,36 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                   height: 120,
                   width: 120,
                   child: PieChart(
-                    PieChartData(
-                      borderData: FlBorderData(show: false),
-                      sectionsSpace: 2,
-                      centerSpaceRadius: 30,
-                      sections: entries.asMap().entries.map((e) {
-                        final index = e.key;
-                        final entry = e.value;
-                        final isTouched = index == _touchedIndex;
-                        final radius = isTouched ? 40.0 : 30.0;
-                        
-                        return PieChartSectionData(
-                          color: palette[index % palette.length],
-                          value: entry.value,
-                          title: '', 
-                          radius: radius,
-                        );
-                      }).toList(),
-                      pieTouchData: PieTouchData(
-                        touchCallback: (FlTouchEvent event, pieTouchResponse) {
-                          setState(() {
-                            if (!event.isInterestedForInteractions || 
-                                pieTouchResponse == null || 
-                                pieTouchResponse.touchedSection == null) {
-                              _touchedIndex = -1;
-                              return;
-                            }
-                            _touchedIndex = pieTouchResponse.touchedSection!.touchedSectionIndex;
-                          });
-                        },
-                      ),
+                      PieChartData(
+                        borderData: FlBorderData(show: false),
+                        sectionsSpace: 2,
+                        centerSpaceRadius: 30,
+                        sections: entries.asMap().entries.map((e) {
+                          final index = e.key;
+                          final entry = e.value;
+                          final isTouched = index == _touchedIndex;
+                          final radius = isTouched ? 40.0 : 30.0;
+                          
+                          return PieChartSectionData(
+                            color: palette[index % palette.length],
+                            value: entry.value,
+                            title: '', 
+                            radius: radius,
+                          );
+                        }).toList(),
+                        pieTouchData: PieTouchData(
+                          touchCallback: (FlTouchEvent event, pieTouchResponse) {
+                            setState(() {
+                              if (!event.isInterestedForInteractions || 
+                                  pieTouchResponse == null || 
+                                  pieTouchResponse.touchedSection == null) {
+                                _touchedIndex = -1;
+                                return;
+                              }
+                              _touchedIndex = pieTouchResponse.touchedSection!.touchedSectionIndex;
+                            });
+                          },
+                        ),
                     ),
                   ),
                 ),
@@ -409,7 +416,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                       Switch(
                         value: actualState,
                         onChanged: (val) => setState(() => actualState = val),
-                        activeColor: _cCyan,
+                        activeThumbColor: _cCyan,
                       ),
                       Text("YES", style: TextStyle(color: actualState ? _cCyan : _textSecondary, fontWeight: FontWeight.bold)),
                     ],
@@ -429,9 +436,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                         userId: user.uid,
                         applianceName: applianceName,
                         actualState: actualState,
-                        predictedState: true, // Currently we only flag anomalies (predicted active)
+                        predictedState: true,
                       );
-                      if (mounted) {
+                      if (context.mounted) {
                         Navigator.pop(context);
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(content: Text("Feedback synced with AI engine. Thank you!"))

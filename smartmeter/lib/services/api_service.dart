@@ -1,35 +1,42 @@
 // smartmeter/lib/services/api_service.dart
 
 import 'dart:convert';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  final String _baseUrl = 'https://ml-backend-i252q36f5a-as.a.run.app/api/v1';
+  final String _baseUrl = 'https://ml-backend-338592292074.asia-southeast1.run.app';
 
   Future<Map<String, dynamic>> triggerDisaggregation({
     required String userId,
-    required List<double> aggregateReadings,
+    required List<double> readings,
   }) async {
-    final Uri url = Uri.parse('$_baseUrl/disaggregate');
+    final Uri url = Uri.parse('$_baseUrl/api/v1/disaggregate');
     
-    // High-level: Serialize local primitives to the exact JSON contract required by Pydantic.
+    final User? user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw Exception("User authorization missing.");
+    
+    final String? idToken = await user.getIdToken();
+
     final Map<String, dynamic> requestBody = {
-      'user_id': userId,
-      'aggregate_readings': aggregateReadings,
+      'userId': userId,
+      'aggregateReadings': readings,
     };
 
     try {
       final response = await http.post(
         url,
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $idToken',
+        },
         body: jsonEncode(requestBody),
-      );
+      ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
         final Map<String, dynamic> decodedResponse = jsonDecode(response.body);
         
         if (decodedResponse['status'] == 'success') {
-          // Developer Expectation: Return data payload directly for model factory mapping.
           return decodedResponse['data'] as Map<String, dynamic>;
         } else {
           throw Exception(decodedResponse['message'] ?? 'Backend logic failure');

@@ -3,7 +3,7 @@ import datetime
 import json
 import os
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, messaging
 from utils.logger import AppLog
 from utils.secrets import get_secret
 
@@ -22,11 +22,10 @@ class FirebaseClient:
             # Developer Expectation: Prevent re-initialization if the app context is already active.
             return
 
-        # Production Path 1: Google Cloud Secret Manager
+        #Google Cloud Secret Manager
         sa_json, source = get_secret("FIREBASE_SERVICE_ACCOUNT")
         if sa_json:
             try:
-                # Payload can be raw JSON or Base64 (handle both for legacy compatibility)
                 try:
                     cert_dict = json.loads(sa_json)
                 except (json.JSONDecodeError, TypeError):
@@ -93,20 +92,32 @@ class FirebaseClient:
             AppLog.error("FIRESTORE_BATCH", f"Batch update failed: {str(e)}")
             raise e
 
+    def _clean_numpy(self, data):
+        # High-level: Recursively converts NumPy types to native Python types for Firestore serialization.
+        if isinstance(data, dict):
+            return {k: self._clean_numpy(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._clean_numpy(v) for v in data]
+        elif "numpy" in str(type(data)):
+            return data.item() if hasattr(data, 'item') else float(data)
+        return data
+
     def save_disaggregation_result(self, payload: dict):
-        # High-level: Persists disaggregation model output with explicit type-safety checks.
+        # High-level: Persists disaggregation model output with strict type-safety and logging.
         try:
-            # Developer Expectation: Deep inspection loop to catch non-serializable NumPy types before commit.
-            for key, value in payload.items():
-                if isinstance(value, dict):
-                    for sub_key, sub_value in value.items():
-                        if "numpy" in str(type(sub_value)):
-                            AppLog.error("SERIALIZATION", f"Numpy contaminant found: payload['{key}']['{sub_key}']")
+            AppLog.info("FIRESTORE_SAVE", f"Attempting to save result for {payload.get('userId')} ({payload.get('month')}/{payload.get('year')})")
             
-            self.db.collection('disaggregation_results').add(payload)
-            AppLog.info("FIRESTORE_SAVE", f"Disaggregation result saved for user: {payload.get('userId')}")
+            # Developer Expectation: Deep-clean the payload to prevent gRPC serialization errors.
+            cleaned_payload = self._clean_numpy(payload)
+            
+            # Explicitly ensure timestamp is a native DateTime or SERVER_TIMESTAMP
+            if 'timestamp' in cleaned_payload and not isinstance(cleaned_payload['timestamp'], (datetime.datetime, str)):
+                cleaned_payload['timestamp'] = firestore.SERVER_TIMESTAMP
+
+            doc_ref = self.db.collection('disaggregation_results').add(cleaned_payload)
+            AppLog.info("FIRESTORE_SAVE", f"SUCCESS: Result persisted with ID: {doc_ref[1].id}")
         except Exception as e:
-            AppLog.error("FIRESTORE_SAVE", f"Transaction aborted: {str(e)}")
+            AppLog.error("FIRESTORE_SAVE", f"CRITICAL PERSISTENCE FAILURE: {str(e)}")
             raise e
 
     def save_daily_usage(self, user_id: str, hourly_profile: dict):
@@ -164,3 +175,68 @@ class FirebaseClient:
             AppLog.info("FIRESTORE_META", f"Updated signature metadata for {app_name}: {meta}")
         except Exception as e:
             AppLog.error("FIRESTORE_META", f"Meta update failed for {app_name}: {str(e)}")
+
+    def get_historical_telemetry(self, user_id: str, month: int, year: int):
+        # High-level: Fetches historical wattage readings for a specific billing period.
+        try:
+            # Developer Expectation: Query telemetry collection with timestamp bounds.
+            # For simplicity, we fetch the last 1000 readings for that user.
+            # Real-world would use start/end date filters.
+            docs = self.db.collection('users').document(user_id).collection('telemetry') \
+                .order_by('timestamp', direction=firestore.Query.DESCENDING).limit(1000).stream()
+            
+            readings = [float(doc.to_dict().get('wattage', 0)) for doc in docs]
+            AppLog.info("FIRESTORE_READ", f"Fetched {len(readings)} historical readings for user: {user_id}")
+            return readings
+        except Exception as e:
+            AppLog.error("FIRESTORE_READ", f"Failed to fetch historical telemetry: {str(e)}")
+            return []
+
+    def get_user_data(self, user_id: str):
+        # High-level: Retrieves the base user document for configuration and goals.
+        try:
+            doc = self.db.collection('users').document(user_id).get()
+            return doc.to_dict() if doc.exists else None
+        except Exception as e:
+            AppLog.error("FIRESTORE_READ", f"Failed to get user data for {user_id}: {str(e)}")
+            return None
+
+    def get_user_role(self, user_id: str):
+        # High-level: Retrieves the role claim from the Firestore user document.
+        try:
+            doc = self.db.collection('users').document(user_id).get()
+            if doc.exists:
+                role = doc.to_dict().get('role', 'student')
+                AppLog.info("FIRESTORE_ROLE", f"User {user_id} has role: {role}")
+                return role
+            AppLog.warning("FIRESTORE_ROLE", f"User {user_id} not found in Firestore, defaulting to student.")
+            return 'student'
+        except Exception as e:
+            AppLog.error("FIRESTORE_ROLE", f"Failed to fetch role for {user_id}: {str(e)}")
+            return 'student'
+
+    def send_fcm_notification(self, user_id: str, title: str, body: str):
+        # High-level: Dispatches push notifications to the student's mobile device.
+        try:
+            user_doc = self.db.collection('users').document(user_id).get()
+            if not user_doc.exists:
+                AppLog.warning("FCM_SEND", f"User {user_id} not found.")
+                return
+
+            token = user_doc.to_dict().get('fcmToken')
+            if not token:
+                AppLog.warning("FCM_SEND", f"No FCM token registered for user: {user_id}")
+                return
+
+            message = messaging.Message(
+                notification=messaging.Notification(
+                    title=title,
+                    body=body
+                ),
+                token=token
+            )
+            
+            response = messaging.send(message)
+            AppLog.info("FCM_SEND", f"Notification sent successfully: {response}")
+        except Exception as e:
+            AppLog.error("FCM_SEND", f"Failed to dispatch FCM: {str(e)}")

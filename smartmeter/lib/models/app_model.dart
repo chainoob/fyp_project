@@ -126,6 +126,7 @@ class EnergyReportData {
   final String id;
   final ReportSummary summary;
   final ReportKPIs kpis;
+  final double carbonFootprint; // Added
   final List<DailyUsagePoint> usageTrend;
   final Map<String, double> applianceBreakdown;
   final Map<String, double> benchmarkBreakdown;
@@ -137,6 +138,7 @@ class EnergyReportData {
     required this.id,
     required this.summary,
     required this.kpis,
+    required this.carbonFootprint, // Added
     required this.usageTrend,
     required this.applianceBreakdown,
     required this.benchmarkBreakdown,
@@ -155,6 +157,7 @@ class EnergyReportData {
       usageTrend: (data['usageTrend'] as List<dynamic>? ?? [])
           .map((item) => DailyUsagePoint.fromMap(item))
           .toList(),
+      carbonFootprint: (data['carbonFootprint'] as num?)?.toDouble() ?? 0.0,
       applianceBreakdown: Map<String, double>.from(data['breakdown'] ?? {}),
       benchmarkBreakdown: Map<String, double>.from(data['benchmark_breakdown'] ?? {}),
       anomalies: List<String>.from(data['anomalies'] ?? []),

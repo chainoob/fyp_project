@@ -1,3 +1,5 @@
+// smartmeter/lib/screens/students/student_shell.dart
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:smartmeter/controllers/provider.dart';
@@ -28,15 +30,27 @@ class _StudentShellState extends State<StudentShell> {
     super.initState();
     final uid = context.read<AppAuthProvider>().currentUser?.uid;
     if (uid != null) {
+      final now = DateTime.now();
+      
+      // High-Level: Synchronize data fetching hooks on layout initialization
       context.read<ApplianceProvider>().subscribeToUser(uid);
       context.read<GoalProvider>().subscribeToStudent(uid);
+      context.read<EnergyProvider>().subscribeToTelemetry(uid);
+      
+      // Developer Expectation: Hydrate the unified energy report container cache immediately
+      context.read<EnergyProvider>().loadReport(
+        scope: 'Unit',
+        month: now.month,
+        year: now.year,
+        unitId: uid,
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _screens[_idx],
+      body: IndexedStack(index: _idx, children: _screens), // Kept state intact via stack compilation mapping
       bottomNavigationBar: NavigationBar(
         selectedIndex: _idx,
         onDestinationSelected: (index) => setState(() => _idx = index),
@@ -74,26 +88,49 @@ class StudentDashboard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Data Access
-    final usedKwh = context.select<GoalProvider, double>((p) => p.current);
+    final goalProvider = context.watch<GoalProvider>();
+    final energyProvider = context.watch<EnergyProvider>();
+    
+    // Fixed: Point directly to the core infrastructure database report container mapping
+    final report = energyProvider.currentReport;
+    
+    final double usedKwh = goalProvider.current;
+    final List<double> liveTelemetryBuffer = energyProvider.liveReadings;
+
+    // Fixed: Map structural metrics string conversions directly to schema sub-objects
+    final String displayCost = report != null 
+        ? "RM ${report.summary.totalCost.toStringAsFixed(2)}" 
+        : "RM 0.00";
+        
+    final String displayCarbon = report != null 
+        ? "${report.carbonFootprint.toStringAsFixed(1)} kg" 
+        : "0.0 kg";
+        
+    // Dynamic Fallback Selector: Show live hardware metric calculations if historical objects are uncommitted
+    final String displayLoad = liveTelemetryBuffer.isNotEmpty
+        ? "${liveTelemetryBuffer.last.toStringAsFixed(2)} kW"
+        : (report != null ? "${report.summary.totalConsumption.toStringAsFixed(1)} kWh" : "${usedKwh.toStringAsFixed(1)} kWh");
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Bill Estimate Card
         Container(
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
             gradient: const LinearGradient(colors: [AppTheme.navyBlue, Color(0xFF5C6BC0)]),
             borderRadius: BorderRadius.circular(16),
           ),
-          child: const Column(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-               Text("Current Bill Estimate", style: TextStyle(color: Colors.white70)),
-               SizedBox(height: 8),
-               Text("RM 0.00", style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white)),
-               // Additional bill details...
+               const Text("Current Bill Estimate", style: TextStyle(color: Colors.white70)),
+               const SizedBox(height: 8),
+               Text(displayCost, style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white)),
+               if (report == null)
+                 const Padding(
+                   padding: EdgeInsets.only(top: 8),
+                   child: Text("Awaiting staff bill submission...", style: TextStyle(color: Colors.white54, fontSize: 12)),
+                 ),
             ],
           ),
         ),
@@ -102,17 +139,21 @@ class StudentDashboard extends StatelessWidget {
         const Text("Real-Time Metrics", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
         const SizedBox(height: 12),
 
-        // Metrics
         Row(
           children: [
             Expanded(child: MetricTile(
-                label: "Current Load",
-                value: "${usedKwh.toStringAsFixed(1)} kWh",
+                label: liveTelemetryBuffer.isNotEmpty ? "Current Load" : "AI Est. Load",
+                value: displayLoad,
                 icon: Icons.electric_bolt,
                 color: Colors.amber
             )),
             const SizedBox(width: 16),
-            const Expanded(child: MetricTile(label: "Carbon Footprint", value: "0 kg", icon: Icons.co2, color: AppTheme.ecoTeal)),
+            Expanded(child: MetricTile(
+                label: "Carbon Footprint", 
+                value: displayCarbon, 
+                icon: Icons.co2, 
+                color: AppTheme.ecoTeal
+            )),
           ],
         ),
 
@@ -120,7 +161,6 @@ class StudentDashboard extends StatelessWidget {
         const Text("My Goal", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
         const SizedBox(height: 12),
 
-        // Energy Goal Widget
         const EnergyGoalCard(title: "Monthly Budget"),
         
         const SizedBox(height: 40),

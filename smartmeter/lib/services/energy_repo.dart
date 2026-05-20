@@ -1,7 +1,8 @@
+// smartmeter/lib/services/energy_repo.dart
+
 import 'dart:async';
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
@@ -17,7 +18,6 @@ abstract class EnergyRepository {
   Future<bool> handleGoogleAuth(GoogleSignInAccount? googleUser);
   Future<GoogleSignInAccount?> signInWithGoogle();
 
-  // Unified Appliance Management
   Stream<List<Appliance>> getAppliancesStream(String userId);
   Stream<List<MapEntry<String, Appliance>>> getPendingVerificationStream();
   Future<void> saveAppliance(String userId, Appliance app);
@@ -27,11 +27,11 @@ abstract class EnergyRepository {
   Future<void> triggerDisaggregation(String userId, Map<String, dynamic> context);
   Future<String> getStudentDisplayId(String uid);
 
-  // Real-time Telemetry Engine
   Stream<List<double>> getLiveReadingsStream(String userId);
 
   Stream<Map<String, dynamic>> getStudentGoalStream(String uid);
   Future<void> updateStudentGoal(String uid, double newGoal);
+  Future<void> saveFcmToken(String uid, String token);
   Stream<Map<String, dynamic>> getCampusGoalStream();
   Future<void> updateCampusGoal(double newGoal);
 
@@ -54,35 +54,35 @@ abstract class EnergyRepository {
   });
 }
 
-// smartmeter/lib/services/energy_repo.dart
-
 class FirestoreRepository implements EnergyRepository {
   FirebaseAuth get _auth => FirebaseAuth.instance;
   FirebaseFirestore get _db => FirebaseFirestore.instance;
   final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
-  final String _baseUrl = 'https://ml-backend-338592292074.asia-southeast1.run.app/api/v1';
+  
+  // High-Level: Re-mapped the endpoint target route variables to match the production container paths
+  final String _baseUrl = 'https://ml-backend-338592292074.asia-southeast1.run.app';
 
   @override
-Stream<Users?> get authStateChanges {
-  return _auth.authStateChanges().asyncMap((firebaseUser) async {
-    if (firebaseUser == null) return null;
+  Stream<Users?> get authStateChanges {
+    return _auth.authStateChanges().asyncMap((firebaseUser) async {
+      if (firebaseUser == null) return null;
 
-    try {
-      final doc = await _db.collection('users').doc(firebaseUser.uid).get();
-      if (doc.exists) return Users.fromFirestore(doc);
+      try {
+        final doc = await _db.collection('users').doc(firebaseUser.uid).get();
+        if (doc.exists) return Users.fromFirestore(doc);
 
-      return Users(
-        uid: firebaseUser.uid,
-        email: firebaseUser.email ?? '',
-        name: firebaseUser.displayName ?? 'User',
-        role: 'student',
-      );
-    } catch (e, stack) {
-      AppLog.error('Auth State Mapping', e, stack);
-      return null;
-    }
-  });
-}
+        return Users(
+          uid: firebaseUser.uid,
+          email: firebaseUser.email ?? '',
+          name: firebaseUser.displayName ?? 'User',
+          role: 'student',
+        );
+      } catch (e, stack) {
+        AppLog.error('Auth State Mapping', e, stack);
+        return null;
+      }
+    });
+  }
 
   @override
   Future<void> signIn(String email, String password) async =>
@@ -90,7 +90,6 @@ Stream<Users?> get authStateChanges {
 
   @override
   Future<void> saveUserProfile(String uid, Map<String, dynamic> userData) async {
-    // Merges user profile data with server-side timestamps.
     await _db.collection('users').doc(uid).set({
       ...userData,
       'updatedAt': FieldValue.serverTimestamp(),
@@ -117,7 +116,6 @@ Stream<Users?> get authStateChanges {
 
   @override
   Future<bool> handleGoogleAuth(GoogleSignInAccount? googleUser) async {
-    // Authenticates with Firebase using Google provider credentials.
     if (googleUser == null) return false;
     final GoogleSignInAuthentication googleAuth = googleUser.authentication;
     final OAuthCredential credential = GoogleAuthProvider.credential(
@@ -141,7 +139,6 @@ Stream<Users?> get authStateChanges {
 
   @override
   Stream<List<MapEntry<String, Appliance>>> getPendingVerificationStream() {
-    // Maps collectionGroup documents to owner-appliance pairs for the provider.
     return _db.collectionGroup('appliances')
         .where('status', isEqualTo: 'pending')
         .snapshots()
@@ -170,20 +167,75 @@ Stream<Users?> get authStateChanges {
   Future<void> updateApplianceStatus(String userId, String appId, String status) async =>
       await _db.collection('users').doc(userId).collection('appliances').doc(appId).update({'status': status});
 
-  @override
+ @override
+ Future<void> triggerDisaggregation(String userId, Map<String, dynamic> context) async {
+    final url = Uri.parse('$_baseUrl/api/v1/trigger-disaggregation');    
+    final User? user = _auth.currentUser;
+    if (user == null) throw Exception("User authorization missing.");
+    final String? idToken = await user.getIdToken();
+    
+    final response = await http.post(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $idToken',
+      },
+      body: jsonEncode({
+        'userId': userId,
+        'totalBill': context['totalBill'],
+        'month': context['month'],
+        'year': context['year'],
+        'scope': context['scope'] ?? 'Unit',
+        'trainModel': context['trainModel'] ?? false,
+      }),
+    );
 
-  Future<void> triggerDisaggregation(String userId, Map<String, dynamic> context) async {
-  final callable = FirebaseFunctions.instanceFor(region: 'asia-southeast1')
-      .httpsCallable('triggerDisaggregation');
-  
-  // High-level: The keys in this map must match request.data in index.js.
-  await callable.call({
-    'blockId': userId,
-    'totalBill': context['totalBill'],
-    'month': context['month'],
-    'trainModel': context['trainModel'],
-  });
-}
+    if (response.statusCode == 200 || response.statusCode == 202) {
+      final Map<String, dynamic> decoded = jsonDecode(response.body);
+      
+      if (decoded['status'] == 'success' && decoded['data'] != null) {
+        final Map<String, dynamic> dataPayload = decoded['data'] as Map<String, dynamic>;
+        
+        // High-Level: Synchronize incoming HTTP response directly to Firestore.
+        // Developer Expectation: This implicitly regenerates the deleted collection.
+        await _db.collection('disaggregation_results').add({
+          'userId': dataPayload['userId'] ?? userId,
+          'month': dataPayload['month'] ?? context['month'],
+          'year': dataPayload['year'] ?? context['year'],
+          'carbonFootprint': (dataPayload['carbon_footprint'] as num?)?.toDouble() ?? 0.0,
+          'summary': {
+            'totalConsumption': (dataPayload['estimated_load'] as num?)?.toDouble() ?? 0.0,
+            'totalCost': (dataPayload['estimated_cost'] as num?)?.toDouble() ?? (context['totalBill'] as num).toDouble(),
+            'keyIssue': (dataPayload['recommendations'] as List?)?.isNotEmpty == true 
+                ? (dataPayload['recommendations'] as List).first.toString() 
+                : "Optimal efficiency.",
+            'recommendations': List<String>.from(dataPayload['recommendations'] ?? []),
+          },
+          'kpis': {
+            'totalKwh': (dataPayload['estimated_load'] as num?)?.toDouble() ?? 0.0,
+            'dailyAvgKwh': ((dataPayload['estimated_load'] as num?)?.toDouble() ?? 0.0) / 30,
+            'peakKwh': 0.0, 
+            'peakTime': "00:00",
+            'totalCost': (dataPayload['estimated_cost'] as num?)?.toDouble() ?? (context['totalBill'] as num).toDouble(),
+          },
+          'applianceBreakdown': Map<String, double>.from(dataPayload['breakdown'] ?? {}),
+          'benchmarkBreakdown': Map<String, double>.from(dataPayload['benchmark_breakdown'] ?? {}),
+          'anomalies': List<String>.from(dataPayload['anomalies'] ?? []),
+          'hourlyUsage': Map<String, dynamic>.from(dataPayload['hourlyUsage'] ?? {}),
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      } else {
+        throw Exception(decoded['message'] ?? "Pipeline logic failure.");
+      }
+    } else {
+      try {
+        final Map<String, dynamic> errorData = jsonDecode(response.body);
+        throw Exception(errorData['message'] ?? errorData['detail'] ?? "Server Rejection: ${response.statusCode}");
+      } catch (_) {
+        throw Exception("Cloud Run ingestion rejected payload status code: ${response.statusCode}");
+      }
+    }
+  }
 
   @override
   Future<String> getStudentDisplayId(String uid) async {
@@ -194,13 +246,12 @@ Stream<Users?> get authStateChanges {
 
   @override
   Stream<List<double>> getLiveReadingsStream(String userId) {
-    // High-level: Provides a real-time stream of the latest raw telemetry readings.
     return _db
         .collection('users')
         .doc(userId)
         .collection('telemetry')
         .orderBy('timestamp', descending: true)
-        .limit(10) // Capture last 10 readings for contextual smoothing
+        .limit(10) 
         .snapshots()
         .map((snapshot) => snapshot.docs
             .map((doc) => (doc.data()['wattage'] as num).toDouble())
@@ -214,6 +265,10 @@ Stream<Users?> get authStateChanges {
   @override
   Future<void> updateStudentGoal(String uid, double newGoal) async =>
       await _db.collection('users').doc(uid).update({'energyGoal': newGoal});
+
+  @override
+  Future<void> saveFcmToken(String uid, String token) async =>
+      await _db.collection('users').doc(uid).update({'fcmToken': token});
 
   @override
   Stream<Map<String, dynamic>> getCampusGoalStream() =>
@@ -234,8 +289,6 @@ Stream<Users?> get authStateChanges {
     final snap = await _db.collection('blocks').doc(blockId).collection('units').orderBy('name').get();
     return snap.docs.map((d) => {'id': d.id, 'name': d['name'] ?? 'Unknown'}).toList();
   }
-  
-  double _getElectricityRate() => 0.218; // Placeholder for future remote configuration.
 
   @override
   Future<EnergyReportData> fetchEnergyReport({
@@ -245,76 +298,101 @@ Stream<Users?> get authStateChanges {
     String? unitId,
     required int year,
   }) async {
-    // Retrieves analysis metrics and calculates historical performance trends.
     try {
+      final lookupKey = unitId ?? blockId ?? 'aggregate';
+
       final currentSnapshot = await _db.collection('disaggregation_results')
-          .where('userId', isEqualTo: unitId)
+          .where('userId', isEqualTo: lookupKey)
           .where('month', isEqualTo: month)
           .where('year', isEqualTo: year)
           .limit(1)
           .get();
 
-      if (currentSnapshot.docs.isEmpty) throw Exception("Analysis data unavailable.");
+      if (currentSnapshot.docs.isEmpty) {
+        throw Exception("Analysis data unavailable for $lookupKey ($month/$year). Awaiting staff bill submission.");
+      }
       final data = currentSnapshot.docs.first.data();
 
       int prevMonth = month == 1 ? 12 : month - 1;
       int prevYear = month == 1 ? year - 1 : year;
       
       final prevSnapshot = await _db.collection('disaggregation_results')
-          .where('userId', isEqualTo: unitId)
+          .where('userId', isEqualTo: lookupKey)
           .where('month', isEqualTo: prevMonth)
           .where('year', isEqualTo: prevYear)
           .limit(1)
           .get();
 
-      double currentLoad = (data['estimated_load'] as num).toDouble();
+      final Map<String, dynamic> summaryMap = data['summary'] as Map<String, dynamic>? ?? {};
+      final Map<String, dynamic> kpisMap = data['kpis'] as Map<String, dynamic>? ?? {};
+
+      double currentLoad = (summaryMap['totalConsumption'] as num?)?.toDouble() ?? 
+                           (kpisMap['totalKwh'] as num?)?.toDouble() ?? 
+                           (data['estimated_load'] as num?)?.toDouble() ?? 0.0;
+
+      double estimatedCost = (summaryMap['totalCost'] as num?)?.toDouble() ?? 
+                             (kpisMap['totalCost'] as num?)?.toDouble() ?? 
+                             (data['estimated_cost'] as num?)?.toDouble() ?? 0.0;
+      
+      double carbonFootprint = (data['carbonFootprint'] as num?)?.toDouble() ?? 
+                               (data['carbon_footprint'] as num?)?.toDouble() ?? 0.0;
+      
       double comparisonPercent = 0.0;
       if (prevSnapshot.docs.isNotEmpty) {
-        double prevLoad = (prevSnapshot.docs.first.data()['estimated_load'] as num).toDouble();
-        comparisonPercent = ((currentLoad - prevLoad) / prevLoad) * 100;
+        final prevData = prevSnapshot.docs.first.data();
+        final Map<String, dynamic> prevSummary = prevData['summary'] as Map<String, dynamic>? ?? {};
+        double prevLoad = (prevSummary['totalConsumption'] as num?)?.toDouble() ?? 0.0;
+        if (prevLoad > 0) {
+          comparisonPercent = ((currentLoad - prevLoad) / prevLoad) * 100;
+        }
       }
 
-      // Developer Expectation: Move rate to a remote config or database field in production.
-      final double electricityRate = _getElectricityRate(); 
-      final breakdown = Map<String, double>.from(data['breakdown'] ?? {});
-      final hourly = (data['hourlyUsage'] as Map<String, dynamic>).map(
+      final breakdown = Map<String, double>.from(data['applianceBreakdown'] ?? data['breakdown'] ?? {});
+      
+      final hourly = (data['hourlyUsage'] as Map<String, dynamic>? ?? {}).map(
         (k, v) => MapEntry(int.parse(k), (v as num).toDouble())
       );
 
-      double peakKwh = 0.0;
-      int peakHour = 0;
-      hourly.forEach((hour, val) {
-        if (val > peakKwh) {
-          peakKwh = val;
-          peakHour = hour;
-        }
-      });
+      double peakKwh = (kpisMap['peakKwh'] as num?)?.toDouble() ?? 0.0;
+      String peakTime = kpisMap['peakTime'] as String? ?? "00:00";
+      
+      if (peakKwh == 0.0 && hourly.isNotEmpty) {
+        int peakHour = 0;
+        hourly.forEach((hour, val) {
+          if (val > peakKwh) {
+            peakKwh = val;
+            peakHour = hour;
+          }
+        });
+        peakTime = "${peakHour.toString().padLeft(2, '0')}:00";
+      }
 
-      final recommendations = List<String>.from(data['recommendations'] ?? []);
+      final recommendations = List<String>.from(summaryMap['recommendations'] ?? data['recommendations'] ?? []);
 
       return EnergyReportData(
-        id: unitId ?? 'aggregate',
+        id: lookupKey,
         summary: ReportSummary(
           totalConsumption: currentLoad,
           comparisonPercent: comparisonPercent,
-          totalCost: currentLoad * electricityRate,
-          keyIssue: recommendations.isNotEmpty ? recommendations.first : "Optimal efficiency.",
+          totalCost: estimatedCost,
+          keyIssue: summaryMap['keyIssue'] ?? (recommendations.isNotEmpty ? recommendations.first : "Optimal efficiency."),
           recommendations: recommendations,
         ),
         kpis: ReportKPIs(
           totalKwh: currentLoad,
           dailyAvgKwh: currentLoad / 30,
           peakKwh: peakKwh,
-          peakTime: "${peakHour.toString().padLeft(2, '0')}:00",
-          totalCost: currentLoad * electricityRate,
+          peakTime: peakTime,
+          totalCost: estimatedCost,
           changePercent: comparisonPercent,
         ),
+        carbonFootprint: carbonFootprint,
         usageTrend: [], 
         applianceBreakdown: breakdown,
-        benchmarkBreakdown: Map<String, double>.from(data['benchmark_breakdown'] ?? {}),
+        benchmarkBreakdown: Map<String, double>.from(data['benchmarkBreakdown'] ?? data['benchmark_breakdown'] ?? {}),
         anomalies: List<String>.from(data['anomalies'] ?? []),
         hourlyUsage: hourly,
-        costBreakdown: breakdown.map((key, value) => MapEntry(key, value * electricityRate)),
+        costBreakdown: breakdown.map((key, value) => MapEntry(key, currentLoad > 0 ? value * (estimatedCost / currentLoad) : 0.0)),
       );
     } catch (e) {
       rethrow;
@@ -323,7 +401,6 @@ Stream<Users?> get authStateChanges {
   
   @override
   Stream<DocumentSnapshot<Object?>> listenToDisaggregation(String userId) {
-    // High-level: Provides a real-time stream of the latest disaggregation result.
     return _db
         .collection('users')
         .doc(userId)
@@ -346,7 +423,7 @@ Stream<Users?> get authStateChanges {
 
     final String? idToken = await user.getIdToken();
     final response = await http.post(
-      Uri.parse('$_baseUrl/feedback'),
+      Uri.parse('$_baseUrl/api/v1/feedback'),
       body: jsonEncode({
         'user_id': userId,
         'appliance_name': applianceName,
