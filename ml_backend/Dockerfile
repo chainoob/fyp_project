@@ -10,9 +10,11 @@ ENV PORT=8080
 
 WORKDIR /app
 
-# Install system dependencies for C-extensions
+# Install system dependencies for C-extensions and HDF5 compilation
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libhdf5-dev \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -27,4 +29,4 @@ COPY . .
 EXPOSE 8080
 
 # Run FastAPI with Gunicorn and Uvicorn workers for production stability
-CMD ["gunicorn", "main:app", "--workers", "1", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8080"]
+CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--timeout", "120", "-b", "0.0.0.0:8080", "main:app"]

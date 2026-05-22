@@ -1,8 +1,11 @@
 import logging
 import datetime
 import os
+import numpy as np
+import pandas as pd
+from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Request, Depends
-from models.request_models import FeedbackRequest, OptimizationRequest, SyncRequest, DisaggregationRequest, BatchDisaggregationRequest
+from models.request_models import FeedbackRequest, OptimizationRequest, SeedReddRequest, SyncRequest, DisaggregationRequest, BatchDisaggregationRequest
 from services.firebase_client import FirebaseClient
 from services.simulator import AdaptiveBehavioralSimulator
 from services.optimizer import EnergyOptimizer
@@ -80,94 +83,93 @@ async def run_optimization(request: OptimizationRequest, token: dict = Depends(v
         raise HTTPException(status_code=500, detail="Failed to optimize energy weights.")
 
 @app.post("/api/v1/disaggregate")
-async def process_telemetry(request: DisaggregationRequest, token: dict = Depends(verify_firebase_token)):
-    # Run disaggregation pipeline and persist results.
+async def process_realtime_telemetry(request: DisaggregationRequest, token: dict = Depends(verify_firebase_token)):
+    # High-level: Implements continuous-priority sliding window real-time disaggregation.
     try:
         is_staff = db.get_user_role(token["uid"]) == 'staff'
         validate_user_ownership(request.user_id, token["uid"], is_staff=is_staff)
         user_id = request.user_id
-        logger.info(f"Running disaggregation for user: {user_id}")
-        
-        # Verify appliance registry exists for the target UID.
-        registered_appliances = db.get_user_appliances(user_id) 
+
+        registered_appliances = db.get_user_appliances(user_id)
         if not registered_appliances:
-            logger.warning(f"Aborting: No active appliances for user {user_id}")
-            return format_api_response(False, message="No active appliances found. Add appliances to proceed.")
+            return format_api_response(False, message="No active appliances registered.", status_code=400)
 
-        # Resolve environmental context via Weather API.
-        context = weather.get_contextual_data()
-        context["is_weekend"] = datetime.datetime.now().weekday() >= 5
-        context["poll_iron_used_today"] = False
+        raw_readings = request.aggregate_readings
+        if len(raw_readings) < 3:
+            return format_api_response(False, message="Insufficient real-time sequence frame window.", status_code=400)
+
+        # Developer Expectation: Apply median smoothing filtering to flatten transient spikes from resistive thermal loads.
+        smoothed_readings = pd.Series(raw_readings).rolling(window=3, min_periods=1, center=True).median().tolist()
+
+        # High-level: Run sequence matching algorithm on the smoothed signal vector.
+        fhmm_results = fhmm.disaggregate(smoothed_readings)
         
-        # NILM Hybrid Logic: FHMM signal decoding + Monte Carlo behavioral benchmarking.
-        fhmm_results = fhmm.disaggregate(request.aggregate_readings)
-        simulation_results = simulator.run_monte_carlo(registered_appliances, context)
-        
-        # Validate simulation output integrity before payload construction.
-        if 'hourly_profile' not in simulation_results or 'appliance_totals' not in simulation_results:
-            logger.error(f"Simulator output missing keys for {user_id}: {simulation_results}")
-            raise KeyError("Simulator failed to return 'hourly_profile' or 'appliance_totals'.")
+        # Developer Expectation: Extract client-side network state constraints (1.0 = Connected/Active, 0.0 = Offline/Asleep).
+        device_constraints = request.device_states if hasattr(request, 'device_states') else {}
+        registered_types = {app.get('type') for app in registered_appliances.values() if isinstance(app, dict) and app.get('type')}
 
-        # Map FHMM traces to registered appliance types.
-        registered_types = {app['type'] for app in registered_appliances.values()}
-        fhmm_breakdown = {
-            name: round(sum(power_series) / 1000.0, 3) 
-            for name, power_series in fhmm_results.items()
-            if name in registered_types
-        }
+        fhmm_breakdown = {}
+        target_appliances = ["Fan", "Laptop", "Charger", "Lamp", "Iron", "Kettle", "Printer"]
 
-        # Detect high-load unregistered signatures (>500W).
-        anomalies = [
-            name for name, power_series in fhmm_results.items()
-            if name not in registered_types and sum(power_series) > 500 
-        ]
-        
-        # Trigger real-time alerts for anomalies.
-        if anomalies:
-            db.send_fcm_notification(
-                user_id, 
-                "High-Load Anomaly Detected", 
-                f"We detected an unregistered high-load appliance: {', '.join(anomalies)}. Please register it for safety compliance."
-            )
+        for name in target_appliances:
+            if name in fhmm_results:
+                power_series = fhmm_results[name]
+                
+                # Developer Expectation: Calculate continuous running average (Watts) instead of accumulating raw spikes.
+                instantaneous_wattage = float(np.mean(power_series)) if len(power_series) > 0 else 0.0
+                kwh_value = round(sum(power_series) / 1000.0, 3)
 
-        safe_hourly_usage = {str(k): float(v) for k, v in simulation_results['hourly_profile'].items()}
-        estimated_load = sum(fhmm_breakdown.values())
+                # Apply network ingestion override parameters to lock baseline states cleanly
+                if name in device_constraints and device_constraints[name] is not None:
+                    if device_constraints[name] == 0.0:
+                        fhmm_breakdown[name] = 0.0
+                        continue
+                    elif device_constraints[name] == 1.0 and instantaneous_wattage < 5.0:
+                        # Force baseline operational power draw if network confirms laptop is awake but missed by signal thresholds
+                        fhmm_breakdown[name] = round(45.0 / 1000.0, 3) if name == "Laptop" else round(50.0 / 1000.0, 3)
+                        continue
 
-        # Trigger budget threshold alerts.
+                if name in registered_types or kwh_value > 0.0:
+                    fhmm_breakdown[name] = kwh_value
+            else:
+                if name in registered_types:
+                    fhmm_breakdown[name] = 0.0
+
+        # High-level: Update cumulative monthly tracking metrics to power the billing budget module.
+        now = datetime.datetime.now(datetime.timezone.utc)
         user_data = db.get_user_data(user_id)
-        if user_data:
-            energy_goal = user_data.get('energyGoal', 0)
-            if energy_goal > 0 and estimated_load > energy_goal:
+        energy_goal = user_data.get('energyGoal', 0) if user_data else 0
+
+        if energy_goal > 0:
+            historical_records = db.get_monthly_disaggregation_summaries(user_id, now.month, now.year)
+            cumulative_historical_load = sum([float(rec.get('estimated_load', 0.0)) for rec in historical_records])
+            
+            current_window_load = sum(fhmm_breakdown.values())
+            total_monthly_consumption = cumulative_historical_load + current_window_load
+
+            if total_monthly_consumption > energy_goal:
                 db.send_fcm_notification(
                     user_id,
                     "Energy Budget Exceeded",
-                    f"Your monthly consumption ({estimated_load:.2f} kWh) has exceeded your goal of {energy_goal} kWh."
+                    f"Your monthly consumption ({total_monthly_consumption:.2f} kWh) has broken your budget goal of {energy_goal} kWh."
                 )
 
-        now = datetime.datetime.now(datetime.timezone.utc)
         payload = {
-            "userId": user_id, 
+            "userId": user_id,
             "month": now.month,
             "year": now.year,
-            "estimated_load": estimated_load,
-            "estimated_cost": calculate_malaysian_tariff_a(estimated_load),
-            "carbon_footprint": calculate_carbon_footprint(estimated_load),
+            "estimated_load": round(sum(fhmm_breakdown.values()), 2),
             "breakdown": fhmm_breakdown,
-            "benchmark_breakdown": simulation_results['appliance_totals'],
-            "anomalies": anomalies,
-            "recommendations": generate_recommendations(fhmm_breakdown),
-            "hourlyUsage": safe_hourly_usage,
-            "timestamp": now 
+            "anomalies": [],
+            "timestamp": now.isoformat()
         }
-        
-        db.save_disaggregation_result(payload)
+
+        db.save_realtime_disaggregation_node(payload)
         return format_api_response(True, data=payload)
+
     except Exception as e:
-        logger.error(f"Disaggregation failed for user {request.user_id}: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500, 
-            detail="An internal error occurred during disaggregation."
-        )
+        logger.error(f"Real-time pipeline failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal processing error on streaming window.")
 
 @app.post("/api/v1/trigger-disaggregation")
 async def trigger_batch_disaggregation(request: BatchDisaggregationRequest, token: dict = Depends(verify_firebase_token)):
@@ -182,40 +184,69 @@ async def trigger_batch_disaggregation(request: BatchDisaggregationRequest, toke
         if not readings:
             return format_api_response(False, message="No historical telemetry found for this period.", status_code=404)
 
-        fhmm_results = fhmm.disaggregate(readings)
+        # High-level: Isolate the raw aggregate wattage array safely depending on the input shape.
+        if isinstance(readings[0], dict):
+            # Developer Expectation: Extract the primitive float fields into a 1D vector for the HMM input.
+            mains_signals = [float(r.get('wattage', 0.0)) for r in readings]
+            timestamps = [pd.to_datetime(r.get('timestamp')) for r in readings]
+        else:
+            # Developer Expectation: Fallback sequence if data is already a flattened array of numbers.
+            mains_signals = [float(x) for x in readings]
+            # Generate a synthetic chronological range matching the target month if timestamps are detached.
+            start_range = datetime.datetime(request.year, request.month, 1)
+            timestamps = pd.date_range(start=start_range, periods=len(readings), freq='1h')
+
+        # High-level: Execute disaggregation against the isolated 1D array instead of the raw document dictionaries.
+        fhmm_results = fhmm.disaggregate(mains_signals)
         
-        # FIXED: Injected safety guard to prevent NoneType execution crashes
         registered_appliances = db.get_user_appliances(user_id)
         if not registered_appliances:
             logger.warning(f"Aborting batch trigger: No active appliances for user {user_id}")
             return format_api_response(False, message="No active appliances found for this user.")
 
-        # FIXED: Added safe dictionary key lookup for 'type'
         registered_types = {
             app.get('type') for app in registered_appliances.values() if isinstance(app, dict) and app.get('type')
         }
         
-        fhmm_breakdown = {
-            name: round(sum(power_series) / 1000.0, 3) 
-            for name, power_series in fhmm_results.items()
-            if name in registered_types
-        }
+        fhmm_breakdown = {}
+        target_appliances = ["Fan", "Laptop", "Charger", "Lamp", "Iron", "Kettle", "Printer"]
+
+        for name in target_appliances:
+            if name in fhmm_results:
+                power_series = fhmm_results[name]
+                kwh_value = round(sum(power_series) / 1000.0, 3)
+                
+                if name in registered_types or kwh_value > 0.0:
+                    fhmm_breakdown[name] = kwh_value
+            else:
+                if name in registered_types:
+                    fhmm_breakdown[name] = 0.0
 
         estimated_load = sum(fhmm_breakdown.values())
+
+        # Developer Expectation: Construct DataFrame safely using the pre-aligned timestamp sequence.
+        df_traces = pd.DataFrame(fhmm_results, index=timestamps)
+        hourly_df = df_traces.resample('1h').sum() / 1000.0
+        hourly_df = hourly_df.fillna(0.0)
+        
+        hourly_usage_payload = {
+            timestamp.isoformat(): {appliance: round(float(val), 3) for appliance, val in row.items()}
+            for timestamp, row in hourly_df.iterrows()
+        }
         
         now = datetime.datetime.now(datetime.timezone.utc)
         payload = {
             "userId": user_id,
             "month": request.month,
             "year": request.year,
-            "estimated_load": estimated_load,
+            "estimated_load": round(estimated_load, 2),
             "estimated_cost": calculate_malaysian_tariff_a(estimated_load),
             "carbon_footprint": calculate_carbon_footprint(estimated_load),
             "breakdown": fhmm_breakdown,
             "benchmark_breakdown": {}, 
             "anomalies": [],
             "recommendations": ["Monthly report generated via batch trigger."],
-            "hourlyUsage": {}, 
+            "hourlyUsage": hourly_usage_payload, 
             "timestamp": now.isoformat()
         }
 
@@ -290,3 +321,118 @@ async def handle_feedback(request: FeedbackRequest, token: dict = Depends(verify
         return format_api_response(True, data={"new_probability": new_p})    
     except Exception as e:
         return format_api_response(False, message=str(e))
+
+@app.post("/api/v1/dev/seed-synthetic-redd")
+async def seed_exact_synthetic_redd(request: SeedReddRequest, token: dict = Depends(verify_firebase_token)):
+    try:
+        staff_uid = token["uid"]
+        is_staff = db.get_user_role(staff_uid) == 'staff'
+        validate_user_ownership(request.user_id, staff_uid, is_staff=is_staff)
+
+        h5_file_path = "/mnt/datasets/redd.h5" 
+        
+        columns_to_read = {
+            'Lamp': '/building1/elec/meter9',
+            'Fan': '/building1/elec/meter17',
+            'Laptop': '/building1/elec/meter15',
+            'Charger': '/building1/elec/meter16',
+            'Kettle': '/building1/elec/meter11',
+            'Iron': '/building1/elec/meter13',
+            'Printer': '/building1/elec/meter8'
+        }
+
+        resampled_series = {}
+        
+        try:
+            with pd.HDFStore(h5_file_path, mode='r') as store:
+                for col_name, h5_path in columns_to_read.items():
+                    table_path = f"{h5_path}/table"
+                    
+                    if table_path in store:
+                        df_meter = store.get(table_path)
+                        
+                        # Check common column names for timestamps in structural HDF5 exports
+                        if 'index' in df_meter.columns:
+                            df_meter.index = pd.to_datetime(df_meter['index'])
+                        elif 'timestamp' in df_meter.columns:
+                            df_meter.index = pd.to_datetime(df_meter['timestamp'])
+                        elif 'time' in df_meter.columns:
+                            df_meter.index = pd.to_datetime(df_meter['time'])
+                        elif isinstance(df_meter.index, pd.RangeIndex) and df_meter.iloc[:, 0].name == 'index':
+                            df_meter.index = pd.to_datetime(df_meter.iloc[:, 0])
+                        
+                        if 'active' in df_meter.columns:
+                            raw_series = df_meter['active']
+                        elif 'values' in df_meter.columns:
+                            raw_series = df_meter['values']
+                        else:
+                            # Use the last column if the first column was the timestamp index
+                            raw_series = df_meter.iloc[:, -1]
+                        
+                        if not isinstance(raw_series.index, pd.DatetimeIndex):
+                            raise ValueError(f"Could not convert HDF5 index to DatetimeIndex for {col_name}. Current columns: {list(df_meter.columns)}")
+
+                        # Resample down to 1-hour chunks safely
+                        resampled_series[col_name] = raw_series.resample('1h').mean().dropna()
+                        del df_meter, raw_series
+                    else:
+                        logger.warning(f"Expected data table missing at path: {table_path}")
+                        resampled_series[col_name] = pd.Series(dtype='float64')
+        except Exception as e:
+            logger.error(f"HDF5 Critical Ingestion Failure: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Data storage read failure: {str(e)}")
+
+        # High-level: Re-baselines static HDF5 time-series indices to fit within the dynamically requested billing month.
+        df = pd.DataFrame(resampled_series)
+        df = df.ffill().fillna(0)
+        df['synthetic_mains'] = df.sum(axis=1)
+
+        # Developer Expectation: Calculate the offset delta between the raw dataset index and the target year/month parameters.
+        target_start = datetime.datetime(request.year, request.month, 1, tzinfo=datetime.timezone.utc)
+        raw_start = df.index[0].tz_localize(datetime.timezone.utc) if df.index[0].tzinfo is None else df.index[0]
+        time_delta_offset = target_start - raw_start
+
+        # Developer Expectation: Shift the dataframe index vector so all generated records match the request boundary context.
+        df.index = df.index + time_delta_offset
+
+        # Clear secondary dictionary tracking structures from heap memory
+        del resampled_series
+
+        batch = db.db.batch()
+        write_count = 0
+
+        for timestamp, row in df.iterrows():
+            doc_ref = db.db.collection('users').document(request.user_id).collection('telemetry').document()
+            native_timestamp = timestamp.to_pydatetime()
+
+            batch.set(doc_ref, {
+                "wattage": float(row['synthetic_mains']),
+                "timestamp": native_timestamp,
+                "is_synthetic_redd": True,
+                "ground_truth": {
+                    "Fan": float(row['Fan']),
+                    "Laptop": float(row['Laptop']),
+                    "Charger": float(row['Charger']),
+                    "Lamp": float(row['Lamp']),
+                    "Iron": float(row['Iron']),
+                    "Kettle": float(row['Kettle']),
+                    "Printer": float(row['Printer'])
+                }
+            })
+            
+            write_count += 1
+            if write_count >= 400:  
+                batch.commit()
+                batch = db.db.batch()
+                write_count = 0
+                
+        if write_count > 0:
+            batch.commit()
+
+        del df
+        return format_api_response(True, message=f"Seeded REDD data for {request.user_id}.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Seeding failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

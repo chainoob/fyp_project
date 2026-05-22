@@ -252,8 +252,17 @@ class ApplianceProvider extends ChangeNotifier {
     await _repo.deleteAppliance(userId, appId);
   }
 
-  Future<void> approve(String userId, String appId) async =>
-      await _repo.updateApplianceStatus(userId, appId, 'active');
+  Future<void> approve(String userId, String appId) async {
+    await _repo.updateApplianceStatus(userId, appId, 'active');
+    
+    final int remainingPending = _pendingQueue
+        .where((entry) => entry.key == userId && entry.value.id != appId)
+        .length;
+
+    if (remainingPending == 0) {
+      await _apiService.seedSyntheticReddData(userId);
+    }
+  }
 
   Future<void> reject(String userId, String appId) async =>
       await _repo.updateApplianceStatus(userId, appId, 'rejected');
@@ -261,6 +270,8 @@ class ApplianceProvider extends ChangeNotifier {
   Future<String> getStudentName(String uid) async {
     return await _repo.getStudentDisplayId(uid);
   }
+
+  
 
   @override
   void dispose() {

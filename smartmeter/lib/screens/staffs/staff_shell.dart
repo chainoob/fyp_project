@@ -173,14 +173,14 @@ class StaffDashboard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          ...anomalies.map((a) => _AnomalyTile(message: a)).toList(),
+          ...anomalies.map((a) => _AnomalyTile(message: a)),
         ],
 
         if (breakdown.isNotEmpty) ...[
           const SizedBox(height: 24),
           const Text("Detected Appliance Profiles", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
           const SizedBox(height: 12),
-          ...breakdown.entries.map((e) => _ApplianceUsageTile(name: e.key, value: e.value)).toList(),
+          ...breakdown.entries.map((e) => _ApplianceUsageTile(name: e.key, value: e.value)),
         ],
 
         const SizedBox(height: 24),

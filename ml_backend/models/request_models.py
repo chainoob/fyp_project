@@ -40,3 +40,8 @@ class FeedbackRequest(BaseModel):
     timestamp: str  
     actual_state: bool  
     predicted_state: bool
+
+class SeedReddRequest(BaseModel):
+    user_id: str
+    month: int
+    year: int

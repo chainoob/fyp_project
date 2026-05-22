@@ -48,4 +48,27 @@ class ApiService {
       throw Exception('Network Pipeline Exception: $e');
     }
   }
+
+  Future<void> seedSyntheticReddData(String userId) async {
+    final url = Uri.parse('$_baseUrl/api/v1/dev/seed-synthetic-redd');
+    
+    final User? user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw Exception("User authorization missing.");
+    final String? idToken = await user.getIdToken();
+
+    final response = await http.post(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $idToken',
+      },
+      body: jsonEncode({
+        'user_id': userId,
+      }),
+    ).timeout(const Duration(minutes: 2)); // High timeout required for HDF5 extraction and batch writes
+
+    if (response.statusCode != 200) {
+      throw Exception('Database seeding pipeline failed: HTTP ${response.statusCode}');
+    }
+  }
 }
