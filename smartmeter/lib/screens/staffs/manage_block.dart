@@ -10,14 +10,21 @@ import 'package:smartmeter/widgets/bill_submission_card.dart';
 // -----------------------------------------------------------------------------
 
 class ManageBlocksScreen extends StatefulWidget {
-  const ManageBlocksScreen({super.key});
+  final FirebaseFirestore? firestore;
+  const ManageBlocksScreen({super.key, this.firestore});
 
   @override
   State<ManageBlocksScreen> createState() => _ManageBlocksScreenState();
 }
 
 class _ManageBlocksScreenState extends State<ManageBlocksScreen> {
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  late final FirebaseFirestore _db;
+
+  @override
+  void initState() {
+    super.initState();
+    _db = widget.firestore ?? FirebaseFirestore.instance;
+  }
 
   Future<void> _showBlockDialog({DocumentSnapshot? block}) async {
     final nameController = TextEditingController(text: block?['name'] ?? '');
@@ -142,7 +149,11 @@ class _ManageBlocksScreenState extends State<ManageBlocksScreen> {
                   onTap: () => Navigator.push(
                     context, 
                     MaterialPageRoute(
-                      builder: (_) => ManageUnitsScreen(blockId: block.id, blockName: data['name'])
+                      builder: (_) => ManageUnitsScreen(
+                        blockId: block.id, 
+                        blockName: data['name'],
+                        firestore: _db,
+                      )
                     )
                   ),
                 ),
@@ -163,16 +174,25 @@ class _ManageBlocksScreenState extends State<ManageBlocksScreen> {
 class ManageUnitsScreen extends StatefulWidget {
   final String blockId;
   final String blockName;
+  final FirebaseFirestore? firestore;
 
-  const ManageUnitsScreen({super.key, required this.blockId, required this.blockName});
+  const ManageUnitsScreen({super.key, required this.blockId, required this.blockName, this.firestore});
 
   @override
   State<ManageUnitsScreen> createState() => _ManageUnitsScreenState();
 }
 
 class _ManageUnitsScreenState extends State<ManageUnitsScreen> {
+  late final FirebaseFirestore _db;
+  
+  @override
+  void initState() {
+    super.initState();
+    _db = widget.firestore ?? FirebaseFirestore.instance;
+  }
+
   CollectionReference get _unitsRef => 
-      FirebaseFirestore.instance.collection('blocks').doc(widget.blockId).collection('units');
+      _db.collection('blocks').doc(widget.blockId).collection('units');
 
   Future<void> _showUnitDialog({DocumentSnapshot? unit}) async {
     final nameController = TextEditingController(text: unit?['name'] ?? '');
@@ -285,6 +305,7 @@ class _ManageUnitsScreenState extends State<ManageUnitsScreen> {
                         blockName: widget.blockName,
                         unitId: unit.id,
                         unitName: unit['name'],
+                        firestore: _db,
                       )
                     )
                   ),
@@ -308,13 +329,15 @@ class ManageRoomsScreen extends StatefulWidget {
   final String blockName;
   final String unitId;
   final String unitName;
+  final FirebaseFirestore? firestore;
 
   const ManageRoomsScreen({
     super.key, 
     required this.blockId, 
     required this.blockName,
     required this.unitId,
-    required this.unitName
+    required this.unitName,
+    this.firestore,
   });
 
   @override
@@ -322,8 +345,16 @@ class ManageRoomsScreen extends StatefulWidget {
 }
 
 class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
+  late final FirebaseFirestore _db;
+
+  @override
+  void initState() {
+    super.initState();
+    _db = widget.firestore ?? FirebaseFirestore.instance;
+  }
+
   CollectionReference get _roomsRef =>
-      FirebaseFirestore.instance
+      _db
           .collection('blocks').doc(widget.blockId)
           .collection('units').doc(widget.unitId)
           .collection('rooms');
@@ -334,7 +365,7 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
       isScrollControlled: true,
       backgroundColor: AppTheme.surface,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (context) => const _StudentSearchSheet(),
+      builder: (context) => _StudentSearchSheet(firestore: _db),
     );
   }
 
@@ -555,13 +586,15 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
 // -----------------------------------------------------------------------------
 
 class _StudentSearchSheet extends StatefulWidget {
-  const _StudentSearchSheet();
+  final FirebaseFirestore? firestore;
+  const _StudentSearchSheet({this.firestore});
 
   @override
   State<_StudentSearchSheet> createState() => _StudentSearchSheetState();
 }
 
 class _StudentSearchSheetState extends State<_StudentSearchSheet> {
+  late final FirebaseFirestore _db;
   final TextEditingController _searchCtrl = TextEditingController();
   List<Map<String, dynamic>> _results = [];
   bool _isLoading = true; 
@@ -570,6 +603,7 @@ class _StudentSearchSheetState extends State<_StudentSearchSheet> {
   @override
   void initState() {
     super.initState();
+    _db = widget.firestore ?? FirebaseFirestore.instance;
     _performSearch(""); 
   }
 
@@ -593,7 +627,7 @@ class _StudentSearchSheetState extends State<_StudentSearchSheet> {
 
     try {
       // Base Query: Always look for students
-      Query ref = FirebaseFirestore.instance
+      Query ref = _db
           .collection('users')
           .where('role', isEqualTo: 'student');
 

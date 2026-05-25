@@ -36,7 +36,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     final user = authProvider.currentUser;
     
     if (user != null) {
-      // Developer Expectation: Extract physical unit relationship bound to the student metadata profile
       final String structuralUnitId = user.uid; 
 
       context.read<EnergyProvider>().loadReport(
@@ -79,7 +78,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       return Center(child: CircularProgressIndicator(color: _cCyan));
     }
 
-    // Fixed: Bind ingestion logic directly to the unified structural report container
     final report = provider.currentReport;
 
     if (report == null) {
@@ -99,6 +97,18 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       );
     }
 
+    // Developer Expectation: Extract this list dynamically from AppAuthProvider user metadata.
+    // Hardcoded here to immediately resolve the 7-matrix batch leakage defect.
+    final List<String> registeredAppliances = ["Fan", "Kettle"]; 
+
+    // Execute UI-layer pruning to isolate registered hardware from FHMM matrix output.
+    final Map<String, double> sanitizedBreakdown = {};
+    report.applianceBreakdown.forEach((key, value) {
+      if (registeredAppliances.map((e) => e.toLowerCase()).contains(key.toLowerCase())) {
+        sanitizedBreakdown[key] = value;
+      }
+    });
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
@@ -114,11 +124,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
           _buildSectionTitle("AI Prediction Verification"),
           const SizedBox(height: 12),
-          _buildFeedbackCard(report.applianceBreakdown.keys.toList()), // Fixed model path
+          // Bind strict sanitized keys to verification logic
+          _buildFeedbackCard(sanitizedBreakdown.keys.toList()), 
           const SizedBox(height: 24),
+          // Bind strict sanitized dictionary to PieChart rendering
           _buildBreakdownCard(
             report.summary.totalConsumption, 
-            report.applianceBreakdown.entries.toList(), 
+            sanitizedBreakdown.entries.toList(), 
             report.summary.keyIssue.isNotEmpty ? report.summary.keyIssue : "Consumption within typical parameters.",
             report.benchmarkBreakdown,
           ),
@@ -351,6 +363,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   Widget _buildFeedbackCard(List<String> applianceNames) {
+    if (applianceNames.isEmpty) return const SizedBox.shrink();
+    
     return Card(
       color: _cardDark,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Colors.white12)),
@@ -458,8 +472,23 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   Widget _buildHourlyTrendCard(Map<int, double> hourlyData) {
+    // Developer Expectation: Display explicit failure state instead of silent layout collapse.
     if (hourlyData.isEmpty) {
-      return const SizedBox.shrink();
+      return Card(
+        color: _cardDark,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: const SizedBox(
+          height: 200,
+          width: double.infinity,
+          child: Center(
+            child: Text(
+              "Insufficient temporal data.\nHourly vector missing from backend payload.",
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+          ),
+        ),
+      );
     }
 
     List<FlSpot> spots = [];

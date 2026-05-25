@@ -3,13 +3,16 @@
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
+import 'network_state_detector.dart';
 
 class ApiService {
   final String _baseUrl = 'https://ml-backend-338592292074.asia-southeast1.run.app';
+  final NetworkStateDetector _detector = NetworkStateDetector();
 
   Future<Map<String, dynamic>> triggerDisaggregation({
     required String userId,
     required List<double> readings,
+    required Map<String, double?> manualOverrides,
   }) async {
     final Uri url = Uri.parse('$_baseUrl/api/v1/disaggregate');
     
@@ -18,9 +21,14 @@ class ApiService {
     
     final String? idToken = await user.getIdToken();
 
+    // Developer Expectation: Dynamically track active network sockets before payload dispatch.
+    Map<String, double?> networkConstraints = await _detector.evaluateApplianceNetworkStates();
+
     final Map<String, dynamic> requestBody = {
       'userId': userId,
       'aggregateReadings': readings,
+      'networkStates': networkConstraints,
+      'manualOverrides': manualOverrides,
     };
 
     try {
@@ -65,7 +73,7 @@ class ApiService {
       body: jsonEncode({
         'user_id': userId,
       }),
-    ).timeout(const Duration(minutes: 2)); // High timeout required for HDF5 extraction and batch writes
+    ).timeout(const Duration(minutes: 2));
 
     if (response.statusCode != 200) {
       throw Exception('Database seeding pipeline failed: HTTP ${response.statusCode}');
