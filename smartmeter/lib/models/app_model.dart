@@ -8,7 +8,6 @@ class Users {
   final String role; // 'student' or 'staff'
   final String? studentId;
   final String? dormBlock;
-  final String? department;
   final String? photoUrl;
 
   const Users({
@@ -18,7 +17,6 @@ class Users {
     required this.role,
     this.studentId,
     this.dormBlock,
-    this.department,
     this.photoUrl
   });
 
@@ -31,7 +29,6 @@ class Users {
       role: data['role'] ?? 'student',
       studentId: data['studentId'],
       dormBlock: data['dormBlock'],
-      department: data['department'],
       photoUrl: data['photoUrl']
     );
   }
@@ -43,7 +40,6 @@ class Users {
       'role': role,
       'studentId': studentId,
       'dormBlock': dormBlock,
-      'department': department,
       'photoUrl': photoUrl,
       'updatedAt': FieldValue.serverTimestamp(),
     };

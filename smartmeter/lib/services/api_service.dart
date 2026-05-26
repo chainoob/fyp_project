@@ -1,5 +1,3 @@
-// smartmeter/lib/services/api_service.dart
-
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
@@ -13,6 +11,7 @@ class ApiService {
     required String userId,
     required List<double> readings,
     required Map<String, double?> manualOverrides,
+    required List<String> registeredAppliances,
   }) async {
     final Uri url = Uri.parse('$_baseUrl/api/v1/disaggregate');
     
@@ -21,8 +20,7 @@ class ApiService {
     
     final String? idToken = await user.getIdToken();
 
-    // Developer Expectation: Dynamically track active network sockets before payload dispatch.
-    Map<String, double?> networkConstraints = await _detector.evaluateApplianceNetworkStates();
+    Map<String, double?> networkConstraints = await _detector.evaluateApplianceNetworkStates(registeredAppliances);
 
     final Map<String, dynamic> requestBody = {
       'userId': userId,

@@ -21,7 +21,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   final Color _cardDark = const Color(0xFF1E1E1E);    
   final Color _textPrimary = Colors.white;            
   final Color _textSecondary = Colors.white54;        
-  final Color _cCyan = const Color(0xFF00E5FF);        
+  final Color _cCyan = const Color(0xFF00E5FF);  
+
+  Map<String, double?> manualOverrides = {};      
 
   @override
   void initState() {

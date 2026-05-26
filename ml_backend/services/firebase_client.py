@@ -215,6 +215,35 @@ class FirebaseClient:
             AppLog.error("FIRESTORE_ROLE", f"Failed to fetch role for {user_id}: {str(e)}")
             return 'student'
 
+    def get_monthly_consumption(self, user_id: str, month: int, year: int) -> float:
+        # High-level: Retrieves aggregated monthly consumption from the user's statistics subcollection.
+        try:
+            doc_id = f"{year}_{month}"
+            doc = self.db.collection('users').document(user_id) \
+                .collection('stats').document(doc_id).get()
+            
+            if doc.exists:
+                return float(doc.to_dict().get('total_kwh', 0.0))
+            return 0.0
+        except Exception as e:
+            AppLog.error("FIRESTORE_READ", f"Failed to fetch monthly consumption: {str(e)}")
+            return 0.0
+
+    def increment_monthly_consumption(self, user_id: str, month: int, year: int, amount: float):
+        # High-level: Atomically increments the monthly consumption counter using Firestore increments.
+        try:
+            doc_id = f"{year}_{month}"
+            doc_ref = self.db.collection('users').document(user_id) \
+                .collection('stats').document(doc_id)
+            
+            doc_ref.set({
+                "total_kwh": firestore.Increment(amount),
+                "last_updated": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+            AppLog.info("FIRESTORE_UPDATE", f"Incremented {user_id} monthly total by {amount}")
+        except Exception as e:
+            AppLog.error("FIRESTORE_UPDATE", f"Failed to increment monthly total: {str(e)}")
+
     def send_fcm_notification(self, user_id: str, title: str, body: str):
         # High-level: Dispatches push notifications to the student's mobile device.
         try:

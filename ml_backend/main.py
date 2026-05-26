@@ -1,11 +1,12 @@
 import logging
 import datetime
 import os
+import asyncio
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, Request, Depends
-from ml_backend.services.adaptive_logic import apply_adaptive_hybrid_logic
+from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks
+from services.adaptive_logic import apply_adaptive_hybrid_logic
 from models.request_models import FeedbackRequest, OptimizationRequest, SeedReddRequest, SyncRequest, DisaggregationRequest, BatchDisaggregationRequest
 from services.firebase_client import FirebaseClient
 from services.simulator import AdaptiveBehavioralSimulator
@@ -83,7 +84,7 @@ async def run_optimization(request: OptimizationRequest, token: dict = Depends(v
         raise HTTPException(status_code=500, detail="Failed to optimize energy weights.")
 
 @app.post("/api/v1/disaggregate")
-async def process_realtime_telemetry(request: DisaggregationRequest, token: dict = Depends(verify_firebase_token)):
+async def process_realtime_telemetry(request: DisaggregationRequest, background_tasks: BackgroundTasks, token: dict = Depends(verify_firebase_token)):
     # High-level: Implements continuous-priority sliding window real-time disaggregation with adaptive feedback.
     try:
         is_staff = db.get_user_role(token["uid"]) == 'staff'
@@ -98,8 +99,9 @@ async def process_realtime_telemetry(request: DisaggregationRequest, token: dict
         if len(raw_readings) < 3:
             return format_api_response(False, message="Insufficient real-time sequence frame window.", status_code=400)
 
-        if len(raw_readings) > 5:
-            raw_readings = raw_readings[-5:]
+        # Expanded Viterbi window constraint from 5 to 20 for improved temporal context.
+        if len(raw_readings) > 20:
+            raw_readings = raw_readings[-20:]
 
         series_readings = pd.Series(raw_readings).rolling(window=3, min_periods=1, center=True).median().dropna()
         smoothed_readings = [float(x) for x in series_readings.values]
@@ -107,77 +109,90 @@ async def process_realtime_telemetry(request: DisaggregationRequest, token: dict
         if len(smoothed_readings) < 1:
             return format_api_response(False, message="Filtered telemetry window contains no usable signal.", status_code=400)
 
-        fhmm_results = fhmm.disaggregate(smoothed_readings)
-        
-        # Developer Expectation: request schema must include network_states and manual_overrides
-        raw_network = request.network_states if hasattr(request, 'network_states') and request.network_states else {}
-        network_constraints = {str(k).lower(): v for k, v in raw_network.items() if v is not None}
-        
-        raw_manual = request.manual_overrides if hasattr(request, 'manual_overrides') and request.manual_overrides else {}
-        manual_constraints = {str(k).lower(): v for k, v in raw_manual.items() if v is not None}
-        
-        normalized_fhmm = {str(k).lower(): v for k, v in fhmm_results.items()}
-        registered_types = {str(app.get('type')).lower() for app in registered_appliances.values() if isinstance(app, dict) and app.get('type')}
+        # Offload the heavy FHMM disaggregation and blocking database logic to a separate thread.
+        # This prevents the ASGI event loop from being blocked by CPU-bound and synchronous I/O tasks.
+        payload = await asyncio.to_thread(
+            _run_disaggregation_pipeline,
+            user_id,
+            smoothed_readings,
+            request,
+            registered_appliances
+        )
 
-        now = datetime.datetime.now(datetime.timezone.utc)
-        current_hour = now.hour
+        # Offload Firestore persistence and monthly accumulation to background tasks for maximum responsiveness.
+        background_tasks.add_task(db.save_disaggregation_result, payload)
+        background_tasks.add_task(db.increment_monthly_consumption, user_id, payload['month'], payload['year'], payload['estimated_load'])
 
-        fhmm_breakdown = {}
-        target_appliances = ["Fan", "Laptop", "Charger", "Lamp", "Iron", "Kettle", "Printer"]
-
-        for name in target_appliances:
-            # Route evaluation through the adaptive 3-tier logic gate
-            fhmm_breakdown[name] = apply_adaptive_hybrid_logic(
-                db=db,
-                user_id=user_id,
-                appliance_name=name,
-                manual_overrides=manual_constraints,
-                network_states=network_constraints,
-                fhmm_predictions=normalized_fhmm,
-                registered_types=registered_types,
-                current_hour=current_hour
-            )
-
-        user_data = db.get_user_data(user_id)
-        energy_goal = user_data.get('energyGoal', 0) if user_data else 0
-
-        if energy_goal > 0:
-            try:
-                docs = db.db.collection('disaggregation_results') \
-                    .where('userId', '==', user_id) \
-                    .where('month', '==', now.month) \
-                    .where('year', '==', now.year) \
-                    .stream()
-                cumulative_historical_load = sum([float(doc.to_dict().get('estimated_load', 0.0)) for doc in docs])
-            except Exception:
-                cumulative_historical_load = 0.0
-            
-            current_window_load = sum(fhmm_breakdown.values())
-            total_monthly_consumption = cumulative_historical_load + current_window_load
-
-            if total_monthly_consumption > energy_goal:
-                db.send_fcm_notification(
-                    user_id,
-                    "Energy Budget Exceeded",
-                    f"Your monthly consumption ({total_monthly_consumption:.2f} kWh) has broken your budget goal of {energy_goal} kWh."
-                )
-
-        payload = {
-            "userId": user_id,
-            "month": now.month,
-            "year": now.year,
-            "estimated_load": round(sum(fhmm_breakdown.values()), 2),
-            "breakdown": fhmm_breakdown,
-            "anomalies": [],
-            "timestamp": now.isoformat()
-        }
-
-        db.save_disaggregation_result(payload)
         return format_api_response(True, data=payload)
 
     except Exception as e:
         logger.error(f"Real-time pipeline failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal processing error on streaming window.")
+
+def _run_disaggregation_pipeline(user_id, smoothed_readings, request, registered_appliances):
+    """
+    Synchronous helper function to execute FHMM and adaptive logic.
+    Runs in a background thread to avoid blocking the ASGI event loop.
+    """
+    fhmm_results = fhmm.disaggregate(smoothed_readings)
+    
+    # Developer Expectation: request schema must include network_states and manual_overrides
+    raw_network = request.device_states if hasattr(request, 'device_states') and request.device_states else {}
+    network_constraints = {str(k).lower(): v for k, v in raw_network.items() if v is not None}
+    
+    # Check for manual overrides if present in request (backward compatibility)
+    raw_manual = getattr(request, 'manual_overrides', {})
+    manual_constraints = {str(k).lower(): v for k, v in raw_manual.items() if v is not None}
+    
+    normalized_fhmm = {str(k).lower(): v for k, v in fhmm_results.items()}
+    registered_types = {str(app.get('type')).lower() for app in registered_appliances.values() if isinstance(app, dict) and app.get('type')}
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    current_hour = now.hour
+
+    fhmm_breakdown = {}
+    target_appliances = ["Fan", "Laptop", "Charger", "Lamp", "Iron", "Kettle", "Printer"]
+
+    for name in target_appliances:
+        # Route evaluation through the adaptive 3-tier logic gate
+        fhmm_breakdown[name] = apply_adaptive_hybrid_logic(
+            db=db,
+            user_id=user_id,
+            appliance_name=name,
+            manual_overrides=manual_constraints,
+            network_states=network_constraints,
+            fhmm_predictions=normalized_fhmm,
+            registered_types=registered_types,
+            current_hour=current_hour
+        )
+
+    user_data = db.get_user_data(user_id)
+    energy_goal = user_data.get('energyGoal', 0) if user_data else 0
+
+    if energy_goal > 0:
+        # Optimization: Use pre-aggregated monthly counter instead of streaming expensive historical documents.
+        cumulative_historical_load = db.get_monthly_consumption(user_id, now.month, now.year)
+        
+        current_window_load = sum(fhmm_breakdown.values())
+        total_monthly_consumption = cumulative_historical_load + current_window_load
+
+        if total_monthly_consumption > energy_goal:
+            db.send_fcm_notification(
+                user_id,
+                "Energy Budget Exceeded",
+                f"Your monthly consumption ({total_monthly_consumption:.2f} kWh) has broken your budget goal of {energy_goal} kWh."
+            )
+
+    return {
+        "userId": user_id,
+        "month": now.month,
+        "year": now.year,
+        "estimated_load": round(sum(fhmm_breakdown.values()), 2),
+        "breakdown": fhmm_breakdown,
+        "anomalies": [],
+        "hourlyUsage": {str(current_hour): round(sum(fhmm_breakdown.values()), 2)},
+        "timestamp": now.isoformat()
+    }
 
 @app.post("/api/v1/sync-daily")
 async def sync_daily_usage(request: SyncRequest, token: dict = Depends(verify_firebase_token)):

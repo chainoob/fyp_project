@@ -181,12 +181,11 @@ class ApplianceProvider extends ChangeNotifier {
   bool get isAnalyzing => _isAnalyzing;
   Map<String, dynamic>? get latestReportData => _latestReportData;
 
- // smartmeter/lib/providers/analytics_provider.dart (or your state controller file)
-
   Future<void> fetchDisaggregationAnalysis({
     required String userId,
     required List<double> readings,
-    required Map<String, double?> manualOverrides, // Require the overrides matrix from the UI
+    required Map<String, double?> manualOverrides,
+    required List<String> registeredAppliances, 
   }) async {
     _isAnalyzing = true;
     notifyListeners();
@@ -195,7 +194,8 @@ class ApplianceProvider extends ChangeNotifier {
       final data = await _apiService.triggerDisaggregation(
         userId: userId,
         readings: readings,
-        manualOverrides: manualOverrides, 
+        manualOverrides: manualOverrides,
+        registeredAppliances: registeredAppliances, 
       );
       _latestReportData = data;
     } catch (e) {
