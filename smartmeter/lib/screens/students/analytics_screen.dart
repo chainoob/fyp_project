@@ -1,10 +1,11 @@
-// smartmeter/lib/screens/shared/analytics_screen.dart
+// smartmeter/lib/screens/students/analytics_screen.dart
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:smartmeter/controllers/provider.dart';
+import 'package:smartmeter/models/app_model.dart';
 
 class AnalyticsScreen extends StatefulWidget {
   const AnalyticsScreen({super.key});
@@ -23,31 +24,26 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   final Color _textSecondary = Colors.white54;        
   final Color _cCyan = const Color(0xFF00E5FF);  
 
-  Map<String, double?> manualOverrides = {};      
-
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadRealData();
+      _fetchHistoricalData();
     });
   }
 
-  void _loadRealData() {
-    final authProvider = context.read<AppAuthProvider>();
-    final user = authProvider.currentUser;
-    
+  void _fetchHistoricalData() {
+    final user = context.read<AppAuthProvider>().currentUser;
     if (user != null) {
-      final String structuralUnitId = user.uid; 
+      // High-Level: Use reactive stream subscription to auto-update when report is generated.
+      final String reportTargetId = user.assignedUnitId ?? user.uid;
 
-      context.read<EnergyProvider>().loadReport(
-        scope: 'Unit',
+      context.read<EnergyProvider>().subscribeToReport(
+        scope: user.assignedUnitId != null ? 'Unit' : 'Personal',
         month: _selectedDate.month,
         year: _selectedDate.year,
-        unitId: structuralUnitId, 
+        unitId: reportTargetId,
       );
-
-      context.read<EnergyProvider>().subscribeToTelemetry(structuralUnitId);
     }
   }
 
@@ -55,12 +51,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     setState(() {
       _selectedDate = DateTime(_selectedDate.year, _selectedDate.month + offset);
     });
-    _loadRealData(); 
+    _fetchHistoricalData(); 
   }
 
   @override
   Widget build(BuildContext context) {
-    final provider = context.watch<EnergyProvider>();
+    final energyProvider = context.watch<EnergyProvider>();
+    final applianceProvider = context.watch<ApplianceProvider>();
 
     return Scaffold(
       backgroundColor: _bgDark,
@@ -71,25 +68,51 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         elevation: 0,
         iconTheme: IconThemeData(color: _textPrimary),
       ),
-      body: _buildBody(provider),
+      body: _buildBody(energyProvider, applianceProvider),
     );
   }
 
-  Widget _buildBody(EnergyProvider provider) {
+  Widget _buildBody(EnergyProvider provider, ApplianceProvider applianceProvider) {
     if (provider.isLoading || provider.isProcessingAI) {
       return Center(child: CircularProgressIndicator(color: _cCyan));
     }
 
-    final report = provider.currentReport;
+    if (provider.errorMessage != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+              const SizedBox(height: 16),
+              const Text(
+                "Data Pipeline Failure",
+                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                provider.errorMessage!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.redAccent),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
-    if (report == null) {
+    final staticReport = provider.currentReport;
+    final realTimeReport = provider.currentMlReport?.data;
+
+    if (staticReport == null && realTimeReport == null) {
       return Column(
         children: [
           _buildMonthSelector(),
           const Expanded(
             child: Center(
               child: Text(
-                "No analysis data available for this month.\nAwaiting staff bill submission.",
+                "No analysis data available for this month.\nAwaiting telemetry resolution.",
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.white54),
               ),
@@ -99,17 +122,55 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       );
     }
 
-    // Developer Expectation: Extract this list dynamically from AppAuthProvider user metadata.
-    // Hardcoded here to immediately resolve the 7-matrix batch leakage defect.
-    final List<String> registeredAppliances = ["Fan", "Kettle"]; 
+    final List<Appliance> appliances = applianceProvider.appliances;
+    appliances.map((a) => a.type).toList();
 
-    // Execute UI-layer pruning to isolate registered hardware from FHMM matrix output.
+    final bool isCurrentMonth = _selectedDate.month == DateTime.now().month && 
+                               _selectedDate.year == DateTime.now().year;
+
+    // High-Level: Prioritize high-fidelity historical reports (from bill submission).
+    // Fallback to real-time telemetry only for the current month if no historical report exists.
+    final Map<String, dynamic> rawBreakdown = (staticReport != null)
+        ? staticReport.applianceBreakdown 
+        : (isCurrentMonth && realTimeReport != null) ? realTimeReport.breakdown : {};
+
+    Map<int, double> rawHourly = {};
+    if (staticReport != null && staticReport.hourlyUsage.isNotEmpty) {
+      rawHourly = staticReport.hourlyUsage;
+    } else if (isCurrentMonth && realTimeReport != null && realTimeReport.hourlyUsage.isNotEmpty) {
+      rawHourly = realTimeReport.hourlyUsage;
+    }
+
+    final List<String> anomalies = (staticReport != null)
+        ? staticReport.anomalies
+        : (isCurrentMonth && realTimeReport != null) ? realTimeReport.anomalies : [];
+
+    final Map<String, double> benchmarkBreakdown = staticReport?.benchmarkBreakdown ?? {};
+    final String keyIssue = staticReport?.summary.keyIssue ?? "Consumption within typical parameters.";
+
     final Map<String, double> sanitizedBreakdown = {};
-    report.applianceBreakdown.forEach((key, value) {
-      if (registeredAppliances.map((e) => e.toLowerCase()).contains(key.toLowerCase())) {
-        sanitizedBreakdown[key] = value;
+    double unregisteredLoad = 0.0;
+
+    rawBreakdown.forEach((key, value) {
+      final matchingApp = appliances.where(
+        (a) => a.type.toLowerCase() == key.toLowerCase()
+      ).firstOrNull;
+
+      if (matchingApp != null) {
+        sanitizedBreakdown[matchingApp.name] = (value as num).toDouble();
+      } else {
+        unregisteredLoad += (value as num).toDouble();
       }
     });
+
+    if (unregisteredLoad > 0) {
+      sanitizedBreakdown['Unregistered Load'] = unregisteredLoad;
+    }
+
+    final double localizedTotalConsumption = sanitizedBreakdown.values.fold(0.0, (sum, value) => sum + value);
+    final List<String> feedbackTargets = sanitizedBreakdown.keys
+        .where((key) => key != 'Unregistered Load')
+        .toList();
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -119,28 +180,29 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           _buildMonthSelector(),
           const SizedBox(height: 24),
 
-          if (report.anomalies.isNotEmpty) ...[
-            _buildAnomaliesCard(report.anomalies),
+          if (anomalies.isNotEmpty) ...[
+            _buildAnomaliesCard(anomalies),
             const SizedBox(height: 24),
           ],
 
           _buildSectionTitle("AI Prediction Verification"),
           const SizedBox(height: 12),
-          // Bind strict sanitized keys to verification logic
-          _buildFeedbackCard(sanitizedBreakdown.keys.toList()), 
+          
+          _buildFeedbackCard(feedbackTargets), 
+          
           const SizedBox(height: 24),
-          // Bind strict sanitized dictionary to PieChart rendering
+
           _buildBreakdownCard(
-            report.summary.totalConsumption, 
+            localizedTotalConsumption, 
             sanitizedBreakdown.entries.toList(), 
-            report.summary.keyIssue.isNotEmpty ? report.summary.keyIssue : "Consumption within typical parameters.",
-            report.benchmarkBreakdown,
+            keyIssue,
+            benchmarkBreakdown,
           ),
           
           const SizedBox(height: 24),
           _buildSectionTitle("24h Load Profile"),
           const SizedBox(height: 12),
-          _buildHourlyTrendCard(report.hourlyUsage),
+          _buildHourlyTrendCard(rawHourly),
         ],
       ),
     );
@@ -474,7 +536,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   Widget _buildHourlyTrendCard(Map<int, double> hourlyData) {
-    // Developer Expectation: Display explicit failure state instead of silent layout collapse.
     if (hourlyData.isEmpty) {
       return Card(
         color: _cardDark,
@@ -496,6 +557,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     List<FlSpot> spots = [];
     double maxY = 0;
 
+    // Convert Map values back into Cartesian coordinates for the chart
     hourlyData.forEach((hour, value) {
       spots.add(FlSpot(hour.toDouble(), value));
       if (value > maxY) maxY = value;

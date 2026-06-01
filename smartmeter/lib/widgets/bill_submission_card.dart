@@ -5,11 +5,17 @@ import '../controllers/provider.dart';
 class BillSubmissionCard extends StatefulWidget {
   final String userId;
   final String blockId;
+  final String? telemetrySourceId;
+  final int? month;
+  final int? year;
 
   const BillSubmissionCard({
     super.key, 
     required this.userId, 
-    required this.blockId
+    required this.blockId,
+    this.telemetrySourceId,
+    this.month,
+    this.year,
   });
 
   @override
@@ -37,8 +43,9 @@ class _BillSubmissionCardState extends State<BillSubmissionCard> {
         DateTime.now().millisecondsSinceEpoch.toString(), 
         billTotal,
         scope: 'Unit',
-        month: DateTime.now().month,
-        year: DateTime.now().year,
+        month: widget.month ?? DateTime.now().month,
+        year: widget.year ?? DateTime.now().year,
+        telemetrySourceId: widget.telemetrySourceId,
       );
 
       if (mounted) {

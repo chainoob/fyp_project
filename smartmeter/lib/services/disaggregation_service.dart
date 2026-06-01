@@ -1,9 +1,7 @@
-// lib/services/disaggregation_service.dart
-
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
-import '../models/disaggregation_response.dart'; // Import the model file
+import '../models/disaggregation_response.dart'; 
 
 class DisaggregationService {
   static const String _baseUrl = 'https://ml-backend-338592292074.asia-southeast1.run.app';
@@ -12,14 +10,15 @@ class DisaggregationService {
   DisaggregationService({http.Client? client}) : _client = client ?? http.Client();
 
   Future<DisaggregationResponse> fetchDisaggregation({
+    String? targetId,
     required List<double> aggregateReadings,
+    required Map<String, double?> manualOverrides,
   }) async {
     final User? user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       throw Exception('Auth Pipeline Failure: Session context is null.');
     }
 
-    // Forces signature re-evaluation if the local token window has decayed (60 min)
     final String? idToken = await user.getIdToken(true); 
     if (idToken == null) {
       throw Exception('Auth Pipeline Failure: Failed to resolve token signature.');
@@ -34,8 +33,9 @@ class DisaggregationService {
         'Authorization': 'Bearer $idToken',
       },
       body: jsonEncode({
-        'user_id': user.uid,
+        'user_id': targetId ?? user.uid,
         'aggregate_readings': aggregateReadings,
+        'manual_overrides': manualOverrides, 
       }),
     );
 

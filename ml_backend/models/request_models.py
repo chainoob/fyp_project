@@ -26,6 +26,8 @@ class BatchDisaggregationRequest(BaseModel):
     total_bill: float = Field(..., alias="totalBill")
     scope: str = "Unit"
     train_model: bool = Field(False, alias="trainModel")
+    telemetry_source_id: Optional[str] = Field(None, alias="telemetrySourceId")
+    block_id: Optional[str] = Field(None, alias="blockId")
     
     class Config:
         populate_by_name = True
@@ -39,5 +41,9 @@ class FeedbackRequest(BaseModel):
 
 class SeedReddRequest(BaseModel):
     user_id: str
+    month: int
+    year: int
+
+class AggregationRequest(BaseModel):
     month: int
     year: int

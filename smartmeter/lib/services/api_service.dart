@@ -4,7 +4,10 @@ import 'package:http/http.dart' as http;
 import 'network_state_detector.dart';
 
 class ApiService {
-  final String _baseUrl = 'https://ml-backend-338592292074.asia-southeast1.run.app';
+  static const String _baseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'https://ml-backend-338592292074.asia-southeast1.run.app',
+  );
   final NetworkStateDetector _detector = NetworkStateDetector();
 
   Future<Map<String, dynamic>> triggerDisaggregation({
@@ -13,7 +16,7 @@ class ApiService {
     required Map<String, double?> manualOverrides,
     required List<String> registeredAppliances,
   }) async {
-    final Uri url = Uri.parse('$_baseUrl/api/v1/disaggregate');
+    final Uri url = Uri.parse('$_baseUrl/api/v1/trigger-disaggregate');
     
     final User? user = FirebaseAuth.instance.currentUser;
     if (user == null) throw Exception("User authorization missing.");
@@ -55,12 +58,14 @@ class ApiService {
     }
   }
 
-  Future<void> seedSyntheticReddData(String userId) async {
+  Future<void> seedSyntheticReddData(String userId, {int? month, int? year}) async {
     final url = Uri.parse('$_baseUrl/api/v1/dev/seed-synthetic-redd');
     
     final User? user = FirebaseAuth.instance.currentUser;
     if (user == null) throw Exception("User authorization missing.");
     final String? idToken = await user.getIdToken();
+
+    final now = DateTime.now();
 
     final response = await http.post(
       url,
@@ -70,6 +75,8 @@ class ApiService {
       },
       body: jsonEncode({
         'user_id': userId,
+        'month': month ?? now.month,
+        'year': year ?? now.year,
       }),
     ).timeout(const Duration(minutes: 2));
 

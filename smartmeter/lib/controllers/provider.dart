@@ -1,5 +1,3 @@
-// smartmeter/lib/controllers/provider.dart
-
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -264,7 +262,8 @@ class ApplianceProvider extends ChangeNotifier {
         .length;
 
     if (remainingPending == 0) {
-      await _apiService.seedSyntheticReddData(userId);
+      final now = DateTime.now();
+      await _apiService.seedSyntheticReddData(userId, month: now.month, year: now.year);
     }
   }
 
@@ -274,8 +273,6 @@ class ApplianceProvider extends ChangeNotifier {
   Future<String> getStudentName(String uid) async {
     return await _repo.getStudentDisplayId(uid);
   }
-
-  
 
   @override
   void dispose() {
@@ -383,6 +380,105 @@ class ReportProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> triggerAggregation({
+    required String scope,
+    required int month,
+    required int year,
+    String? blockId,
+  }) async {
+    _isLoading = true;
+    notifyListeners();
+
+    try {
+      // 1. Fetch raw underlying unit results directly from the ML output collection
+      final snapshot = await FirebaseFirestore.instance
+          .collection('disaggregation_results')
+          .where('month', isEqualTo: month)
+          .where('year', isEqualTo: year)
+          .get();
+
+      if (snapshot.docs.isEmpty) {
+        throw Exception("No unit data found to compile. Staff must submit bills first.");
+      }
+
+      Map<String, double> aggBreakdown = {};
+      double aggCarbon = 0.0;
+      double aggCost = 0.0;
+      double aggConsumption = 0.0; 
+      Set<String> aggAnomalies = {};
+      Map<String, double> aggHourly = {}; 
+
+      bool processedAny = false;
+
+      // 2. Loop through and mathematically fold the data together
+      for (var doc in snapshot.docs) {
+        final rawData = doc.data();
+        
+        // Skip already aggregated documents to avoid double-counting
+        if (doc.id == 'aggregate' || rawData['userId'] == 'aggregate' || rawData['userId'] == blockId) continue;
+
+        // Ensure Block level aggregation only calculates units inside that specific block
+        if (scope.contains('Block') && rawData['blockId'] != blockId) continue;
+        
+        processedAny = true;
+        final data = EnergyReportData.fromFirestore(doc);
+        
+        aggCarbon += data.carbonFootprint;
+        aggCost += data.summary.totalCost;
+        aggConsumption += data.summary.totalConsumption; 
+        aggAnomalies.addAll(data.anomalies);
+        
+        data.applianceBreakdown.forEach((key, val) {
+          aggBreakdown[key] = (aggBreakdown[key] ?? 0.0) + val;
+        });
+
+        data.hourlyUsage.forEach((hour, val) {
+          aggHourly[hour.toString()] = (aggHourly[hour.toString()] ?? 0.0) + val;
+        });
+      }
+
+      if (!processedAny) {
+         throw Exception("No data matches the selected $scope criteria.");
+      }
+
+      final String lookupKey = (scope == 'Campus') ? 'aggregate' : blockId!;
+
+      // 3. Commit the compiled master report to the main results collection
+      await FirebaseFirestore.instance.collection('disaggregation_results').doc(lookupKey).set({
+        'userId': lookupKey,
+        'scope': scope,
+        'month': month,
+        'year': year,
+        if (blockId != null) 'blockId': blockId,
+        'carbonFootprint': aggCarbon,
+        'breakdown': aggBreakdown,
+        'anomalies': aggAnomalies.toList(),
+        'hourlyUsage': aggHourly,
+        'summary': {
+          'totalConsumption': aggConsumption,
+          'comparisonPercent': 0.0,
+          'totalCost': aggCost,
+          'keyIssue': aggAnomalies.isNotEmpty 
+              ? "Critical: Anomalies detected across ${aggAnomalies.length} profiles." 
+              : "Consumption nominal across all units.",
+          'recommendations': ["Review high-load units identified in breakdown."]
+        },
+        'kpis': {
+          'totalKwh': aggConsumption,
+          'dailyAvgKwh': aggConsumption / 30,
+          'totalCost': aggCost,
+        },
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+    } catch (e) {
+      rethrow;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
   Future<EnergyReportData?> generateReport({
     required String scope,
     required int month,
@@ -394,14 +490,34 @@ class ReportProvider extends ChangeNotifier {
     notifyListeners();
     
     try {
-      final data = await _repo.fetchEnergyReport(
-        scope: scope, 
-        month: month, 
-        year: year,
-        blockId: blockId,
-        unitId: unitId
-      );
-      return data;
+      try {
+        final data = await _repo.fetchEnergyReport(
+          scope: scope, 
+          month: month, 
+          year: year,
+          blockId: blockId,
+          unitId: unitId
+        );
+        return data;
+      } catch (e) {
+        if (scope.toLowerCase() == 'campus' || (scope.toLowerCase() == 'block' && unitId == null)) {
+          await triggerAggregation(
+            scope: scope,
+            month: month,
+            year: year,
+            blockId: blockId,
+          );
+          
+          return await _repo.fetchEnergyReport(
+            scope: scope, 
+            month: month, 
+            year: year,
+            blockId: blockId,
+            unitId: unitId
+          );
+        }
+        rethrow;
+      }
     } catch (e) {
       debugPrint("Report Generation Error: $e");
       rethrow;
@@ -431,17 +547,32 @@ class EnergyProvider extends ChangeNotifier {
   bool isConnected = false;
   String? errorMessage;
 
+  Map<String, double?> manualOverrides = {};
+
+  String? _telemetryUserId;
+  String? _targetReportId;
+
   EnergyProvider(this._repository);
 
   List<double> get liveReadings => _liveReadings;
   Map<String, double> get applianceBreakdown => currentMlReport?.data.breakdown ?? {};
 
-  void subscribeToTelemetry(String userId) {
+  void updateManualOverride(String applianceName, bool isOn) {
+    manualOverrides[applianceName] = isOn ? 1.0 : 0.0;
+    notifyListeners();
+    if (_liveReadings.length >= 3) {
+      fetchRealTimeDisaggregation(aggregateReadings: _liveReadings);
+    }
+  }
+
+  void subscribeToTelemetry(String userId, {String? targetReportId}) {
+    _telemetryUserId = userId;
+    _targetReportId = targetReportId;
+    
     _telemetrySub?.cancel();
     _statusSub?.cancel();
     _iotSource?.dispose();
 
-    // High-level: Initialize the IoT source wrapper for the target user.
     _iotSource = FirebaseTelemetrySource(
       userId, 
       _repository.getLiveReadingsStream(userId)
@@ -453,7 +584,6 @@ class EnergyProvider extends ChangeNotifier {
     });
 
     _telemetrySub = _iotSource!.wattageStream.listen((wattage) {
-      // Maintain a sliding window of the last 10 readings for contextual smoothing.
       if (_liveReadings.length >= 10) _liveReadings.removeAt(0);
       _liveReadings.add(wattage);
       notifyListeners();
@@ -462,6 +592,169 @@ class EnergyProvider extends ChangeNotifier {
         fetchRealTimeDisaggregation(aggregateReadings: _liveReadings);
       }
     });
+  }
+
+  Future<EnergyReportData> _aggregateCampusData(int month, int year) async {
+    // Check if a pre-compiled aggregate report exists first
+    try {
+      final String docId = "aggregate_${month}_$year";
+      final existingAgg = await FirebaseFirestore.instance
+          .collection('disaggregation_results')
+          .doc(docId)
+          .get();
+      
+      if (existingAgg.exists) {
+        return EnergyReportData.fromFirestore(existingAgg);
+      }
+    } catch (_) {}
+
+    final snapshot = await FirebaseFirestore.instance
+        .collection('disaggregation_results')
+        .where('userId', isEqualTo: 'aggregate')
+        .where('month', isEqualTo: month)
+        .where('year', isEqualTo: year)
+        .get();
+
+    if (snapshot.docs.isNotEmpty) {
+      return EnergyReportData.fromFirestore(snapshot.docs.first);
+    }
+
+    // Manual fall-through aggregation if no pre-compiled doc is found
+    final allReports = await FirebaseFirestore.instance
+        .collection('disaggregation_results')
+        .where('month', isEqualTo: month)
+        .where('year', isEqualTo: year)
+        .get();
+
+    if (allReports.docs.isEmpty) {
+      throw Exception("Analysis data unavailable for aggregate ($month/$year). Awaiting staff bill submission.");
+    }
+
+    Map<String, double> aggBreakdown = {};
+    double aggCarbon = 0.0;
+    double aggCost = 0.0;
+    double aggConsumption = 0.0; 
+    Set<String> aggAnomalies = {};
+    Map<int, double> aggHourly = {};
+
+    for (var doc in allReports.docs) {
+      final data = doc.data();
+      // Skip already aggregated documents to avoid double-counting
+      if (doc.id.contains('aggregate') || data['userId'] == 'aggregate') continue;
+      
+      final report = EnergyReportData.fromFirestore(doc);
+      
+      aggCarbon += report.carbonFootprint;
+      aggCost += report.summary.totalCost;
+      aggConsumption += report.summary.totalConsumption; 
+      aggAnomalies.addAll(report.anomalies);
+      
+      report.applianceBreakdown.forEach((key, val) {
+        aggBreakdown[key] = (aggBreakdown[key] ?? 0.0) + val;
+      });
+
+      report.hourlyUsage.forEach((hour, val) {
+        aggHourly[hour] = (aggHourly[hour] ?? 0.0) + val;
+      });
+    }
+
+    return EnergyReportData(
+      id: 'aggregate',
+      summary: ReportSummary(
+        totalConsumption: aggConsumption,
+        comparisonPercent: 0.0, 
+        totalCost: aggCost,
+        keyIssue: aggAnomalies.isNotEmpty 
+            ? "Critical: Anomalies detected across ${aggAnomalies.length} profiles." 
+            : "Campus consumption nominal.",
+        recommendations: [], 
+      ),
+      kpis: ReportKPIs(
+        totalKwh: aggConsumption,
+        dailyAvgKwh: aggConsumption / 30,
+        peakKwh: 0.0,
+        peakTime: "N/A",
+        totalCost: aggCost,
+        changePercent: 0.0,
+      ),
+      carbonFootprint: aggCarbon,
+      usageTrend: [],
+      applianceBreakdown: aggBreakdown,
+      benchmarkBreakdown: {}, 
+      anomalies: aggAnomalies.toList(),
+      hourlyUsage: aggHourly,
+      costBreakdown: {},
+    );
+  }
+
+  void subscribeToReport({
+    required String scope,
+    required int month,
+    required int year,
+    String? unitId,
+    String? blockId,
+  }) {
+    _asyncPipelineSub?.cancel();
+    
+    final String lookupKey = unitId ?? blockId ?? 'aggregate';
+
+    _asyncPipelineSub = FirebaseFirestore.instance
+        .collection('disaggregation_results')
+        .where('userId', isEqualTo: lookupKey)
+        .where('month', isEqualTo: month)
+        .where('year', isEqualTo: year)
+        .snapshots()
+        .listen((snapshot) {
+          if (snapshot.docs.isNotEmpty) {
+            try {
+              currentReport = EnergyReportData.fromFirestore(snapshot.docs.first);
+              isLoading = false;
+              errorMessage = null;
+              notifyListeners();
+            } catch (e, stack) {
+              errorMessage = "Data mapping error: $e";
+              isLoading = false;
+              currentReport = null;
+              AppLog.error("FATAL PARSE ERROR", e, stack);
+              notifyListeners();
+            }
+          } else {
+            if (scope.toLowerCase().contains('campus') || (scope.toLowerCase().contains('block') && unitId == null)) {
+               loadReport(scope: scope, month: month, year: year, blockId: blockId, unitId: unitId);
+            } else {
+              // Retrieve transient real-time fallback data
+              FirebaseFirestore.instance.collection('realtime_results')
+                  .doc(lookupKey)
+                  .get()
+                  .then((doc) {
+                    try {
+                      if (doc.exists) {
+                        currentReport = EnergyReportData.fromFirestore(doc);
+                        errorMessage = null;
+                      } else {
+                        currentReport = null;
+                      }
+                    } catch (e, stack) {
+                      errorMessage = "Fallback mapping error: $e";
+                      currentReport = null;
+                      AppLog.error("FATAL PARSE ERROR", e, stack);
+                    }
+                    isLoading = false;
+                    notifyListeners();
+                  }).catchError((e) {
+                    errorMessage = "Fallback retrieval error: $e";
+                    currentReport = null;
+                    isLoading = false;
+                    notifyListeners();
+                  });
+            }
+          }
+        }, onError: (e) {
+          errorMessage = "Stream rejected: $e";
+          isLoading = false;
+          AppLog.error("FIRESTORE ERROR", e, null);
+          notifyListeners();
+        });
   }
 
   Future<void> loadReport({
@@ -476,15 +769,29 @@ class EnergyProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      currentReport = await _repository.fetchEnergyReport(
-        scope: scope,
-        month: month,
-        year: year,
-        blockId: blockId,
-        unitId: unitId,
-      );
+      if (scope.toLowerCase().contains('campus')) {
+        currentReport = await _aggregateCampusData(month, year);
+      } else if (scope.toLowerCase().contains('block') && unitId == null) {
+        currentReport = await _repository.fetchEnergyReport(
+          scope: scope,
+          month: month,
+          year: year,
+          blockId: blockId,
+        );
+      } else {
+        currentReport = await _repository.fetchEnergyReport(
+          scope: scope,
+          month: month,
+          year: year,
+          blockId: blockId,
+          unitId: unitId,
+        );
+      }
     } catch (e) {
-      errorMessage = e.toString();
+      // Don't set error if we're just waiting for data in a unit scope
+      if (!scope.toLowerCase().contains('unit')) {
+        errorMessage = e.toString();
+      }
       currentReport = null;
     } finally { 
       isLoading = false;
@@ -499,6 +806,7 @@ class EnergyProvider extends ChangeNotifier {
     required String scope,
     required int month,
     required int year,
+    String? telemetrySourceId, 
   }) async {
     isProcessingAI = true;
     errorMessage = null;
@@ -506,10 +814,11 @@ class EnergyProvider extends ChangeNotifier {
 
     try {
       final context = {
-        'billId': billId,
+        'userId': userId,
+        'telemetrySourceId': telemetrySourceId ?? userId, 
         'totalBill': totalBill,
-        'month': month, // Fixed: Passed as int to preserve schema type safety
-        'year': year,   // Passed as int
+        'month': month, 
+        'year': year,  
         'scope': scope,
         'trainModel': false, 
       };
@@ -560,11 +869,12 @@ class EnergyProvider extends ChangeNotifier {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final String cacheKey = "ml_cache_${user.uid}_${DateTime.now().hour}";
+    final String effectiveId = _targetReportId ?? user.uid;
+    final String cacheKey = "ml_cache_${effectiveId}_${DateTime.now().hour}";
     final prefs = await SharedPreferences.getInstance();
 
     final String? cachedData = prefs.getString(cacheKey);
-    if (cachedData != null) {
+    if (cachedData != null && manualOverrides.isEmpty) {
       currentMlReport = DisaggregationResponse.fromJson(jsonDecode(cachedData));
       notifyListeners();
       return;
@@ -576,11 +886,15 @@ class EnergyProvider extends ChangeNotifier {
 
     try {
       final response = await _mlService.fetchDisaggregation(
+        targetId: _targetReportId,
         aggregateReadings: aggregateReadings,
+        manualOverrides: manualOverrides,
       );
       
       currentMlReport = response;
-      await prefs.setString(cacheKey, jsonEncode(response.toJson()));
+      if (manualOverrides.isEmpty) {
+        await prefs.setString(cacheKey, jsonEncode(response.toJson()));
+      }
     } catch (e, stack) {
       errorMessage = "Real-time disaggregation tracking failed.";
       AppLog.error("ML Cloud Run Pipeline Fetch Failure", e, stack);

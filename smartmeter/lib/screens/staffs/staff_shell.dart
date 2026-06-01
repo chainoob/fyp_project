@@ -3,7 +3,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:smartmeter/controllers/provider.dart';
-import 'package:smartmeter/screens/shared/energy_goal.dart';
 import 'package:smartmeter/screens/staffs/manage_block.dart';
 import 'package:smartmeter/screens/staffs/verification_screen.dart';
 import 'package:smartmeter/screens/staffs/manage_report.dart';
@@ -30,9 +29,18 @@ class _StaffShellState extends State<StaffShell> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      final now = DateTime.now();
+      
       context.read<ApplianceProvider>().subscribeToQueue();
       context.read<GoalProvider>().subscribeToCampus();
       context.read<EnergyProvider>().subscribeToTelemetry('campus');
+      
+      // DEFECT REMOVED: Instantiated the Campus Report fetch on layout initialization
+      context.read<EnergyProvider>().loadReport(
+        scope: 'Campus Level',
+        month: now.month,
+        year: now.year,
+      );
     });
   }
 
@@ -88,19 +96,79 @@ class _StaffShellState extends State<StaffShell> {
   }
 }
 
-class StaffDashboard extends StatelessWidget {
+class StaffDashboard extends StatefulWidget {
   const StaffDashboard({super.key});
+
+  @override
+  State<StaffDashboard> createState() => _StaffDashboardState();
+}
+
+class _StaffDashboardState extends State<StaffDashboard> {
+  final Color _cardDark = const Color(0xFF1E1E1E);
+  final Color _textPrimary = Colors.white;
+
+  // DEFECT REMOVED: Injected interactive goal controller to map staff input to Firestore
+  void _showEditGoalDialog(BuildContext context, GoalProvider goalProvider) {
+    final TextEditingController controller = TextEditingController(
+      text: goalProvider.target > 0 ? goalProvider.target.toStringAsFixed(0) : "5000"
+    );
+    
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _cardDark,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Colors.white12)),
+        title: Text("Edit Campus Budget", style: TextStyle(color: _textPrimary, fontWeight: FontWeight.bold)),
+        content: TextField(
+          controller: controller,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: TextStyle(color: _textPrimary),
+          cursorColor: const Color(0xFF00E5FF),
+          decoration: const InputDecoration(
+            labelText: "Target Goal (kWh)",
+            labelStyle: TextStyle(color: Colors.white54),
+            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: Color(0xFF00E5FF))),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Cancel", style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final double? newGoal = double.tryParse(controller.text);
+              if (newGoal != null && newGoal > 0) {
+                goalProvider.setGoal(newGoal);
+              }
+              Navigator.pop(ctx);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E5FF)),
+            child: const Text("Save", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final energyProvider = context.watch<EnergyProvider>();
-    final List<double> aggregateReadings = energyProvider.liveReadings;
-    
-    final double campusLoadKw = aggregateReadings.isNotEmpty ? aggregateReadings.last / 1000.0 : 0.0;
-    final bool isLive = energyProvider.isConnected;
-
     final goalProvider = context.watch<GoalProvider>();
-    final double totalUsageKwh = goalProvider.current;
+    final report = energyProvider.currentReport;
+    
+    final List<double> aggregateReadings = energyProvider.liveReadings;
+    final bool isLive = energyProvider.isConnected && aggregateReadings.isNotEmpty;
+    final double campusLoadKw = isLive ? aggregateReadings.last / 1000.0 : 0.0;
+
+    // DEFECT REMOVED: Mathematical aggregation restores the current total bypass
+    final double totalUsageKwh = report != null 
+        ? report.applianceBreakdown.values.fold(0.0, (sum, value) => sum + value) 
+        : 0.0;
+        
+    final double targetGoalKwh = goalProvider.target > 0 ? goalProvider.target : 5000.0; 
+    final double safePercentage = targetGoalKwh > 0 ? (totalUsageKwh / targetGoalKwh).clamp(0.0, 1.0) : 0.0;
 
     final Map<String, double> breakdown = energyProvider.applianceBreakdown;
     final List<String> anomalies = energyProvider.currentMlReport?.data.anomalies ?? [];
@@ -156,7 +224,7 @@ class StaffDashboard extends StatelessWidget {
                 children: [
                   const Icon(Icons.history, color: Colors.white54, size: 16),
                   const SizedBox(width: 4),
-                  Text("Total Accumulated: ${totalUsageKwh.toStringAsFixed(0)} kWh", style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                  Text("Total Accumulated: ${totalUsageKwh.toStringAsFixed(1)} kWh", style: const TextStyle(color: Colors.white70, fontSize: 13)),
                 ],
               ),
             ],
@@ -187,7 +255,53 @@ class StaffDashboard extends StatelessWidget {
         const Text("Energy Plan & Alerts", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
         const SizedBox(height: 12),
 
-        const EnergyGoalCard(title: "Campus Monthly Plan"),
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.white, 
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              InkWell(
+                onTap: () => _showEditGoalDialog(context, goalProvider),
+                borderRadius: BorderRadius.circular(8),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 4.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text("Campus Monthly Plan", style: TextStyle(color: Colors.black, fontSize: 16, fontWeight: FontWeight.bold)),
+                      Icon(Icons.edit, color: Colors.grey, size: 16),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text("${(safePercentage * 100).toStringAsFixed(0)}%", style: const TextStyle(color: AppTheme.ecoTeal, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: LinearProgressIndicator(
+                  value: safePercentage,
+                  backgroundColor: Colors.grey.shade200,
+                  color: AppTheme.ecoTeal,
+                  minHeight: 12,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text("${totalUsageKwh.toStringAsFixed(1)} kWh used", style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                  Text("Goal: ${targetGoalKwh.toStringAsFixed(0)} kWh", style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                ],
+              ),
+            ],
+          ),
+        ),
 
         const SizedBox(height: 24),
         const Text("Infrastructure", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),

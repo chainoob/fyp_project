@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from services.adaptive_logic import apply_adaptive_hybrid_logic
 from models.request_models import FeedbackRequest, OptimizationRequest, SeedReddRequest, SyncRequest, DisaggregationRequest, BatchDisaggregationRequest
 from services.firebase_client import FirebaseClient
@@ -21,6 +22,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SmartMeter ML Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Service singleton instances for pipeline orchestration.
 db = FirebaseClient()
@@ -72,10 +81,10 @@ async def run_optimization(request: OptimizationRequest, token: dict = Depends(v
         if not appliances:
             raise ValueError("No active appliances found for user.")
             
-        new_weights = optimizer.refine(appliances, request.actual_bill)
+        new_weights = await asyncio.to_thread(optimizer.refine, appliances, request.actual_bill)
         
         # Sync optimized weights (prob_day/prob_night) to user Firestore document.
-        db.update_appliance_weights(request.user_id, appliances, new_weights)
+        await asyncio.to_thread(db.update_appliance_weights, request.user_id, appliances, new_weights)
         return format_api_response(True, message="Weights optimized successfully")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -83,9 +92,119 @@ async def run_optimization(request: OptimizationRequest, token: dict = Depends(v
         logger.error(f"Optimization failed: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to optimize energy weights.")
 
+@app.post("/api/v1/trigger-disaggregation")
+async def trigger_batch_disaggregation(request: BatchDisaggregationRequest, background_tasks: BackgroundTasks, token: dict = Depends(verify_firebase_token)):
+    # High-level: Initiates heavy historical disaggregation for a full billing month.
+    try:
+        is_staff = db.get_user_role(token["uid"]) == 'staff'
+        validate_user_ownership(request.user_id, token["uid"], is_staff=is_staff)
+        
+        # Developer Expectation: telemetry_source_id is used for data lookup (e.g. Student UID),
+        # while request.user_id is used as the target key for the report result (e.g. Unit ID).
+        telemetry_uid = request.telemetry_source_id or request.user_id
+        
+        # Fetch historical telemetry window from Firestore using the source ID.
+        readings = await asyncio.to_thread(db.get_historical_telemetry, telemetry_uid, request.month, request.year)
+        if not readings:
+            logger.warning(f"Batch processing aborted: No telemetry data found for user {telemetry_uid} in period {request.month}/{request.year}")
+            return format_api_response(False, message="No telemetry found for the selected period.", status_code=400)
+            
+        registered_appliances = await asyncio.to_thread(db.get_user_appliances, telemetry_uid)
+        if not registered_appliances:
+            return format_api_response(False, message="No active appliances registered for data source.", status_code=400)
+
+        # Offload intensive Viterbi decoding to background threads, using request.user_id as report target.
+        payload = await asyncio.to_thread(
+            _run_batch_pipeline,
+            request.user_id,
+            readings,
+            request,
+            registered_appliances
+        )
+        
+        # Persist results to Firestore for frontend synchronization.
+        background_tasks.add_task(db.save_disaggregation_result, payload)
+        
+        return format_api_response(True, data=payload)
+    except Exception as e:
+        logger.error(f"Batch pipeline failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal processing error on batch disaggregation.")
+
+def _run_batch_pipeline(user_id, readings, request, registered_appliances):
+    """
+    Synchronous helper to process historical telemetry blocks.
+    Calculates proportional costs and carbon footprints.
+    """
+    # Proactive smoothing of historical noisy signal.
+    series_readings = pd.Series(readings).rolling(window=5, min_periods=1, center=True).median().dropna()
+    smoothed_readings = [float(x) for x in series_readings.values]
+    
+    fhmm_results = fhmm.disaggregate(smoothed_readings)
+    
+    normalized_fhmm = {str(k).lower(): v for k, v in fhmm_results.items()}
+    registered_types = {str(app.get('type')).lower() for app in registered_appliances.values() if isinstance(app, dict) and app.get('type')}
+    
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
+    fhmm_breakdown = {}
+    target_appliances = ["Fan", "Laptop", "Charger", "Lamp", "Iron", "Kettle", "Printer"]
+    
+    for name in target_appliances:
+        # Batch processing assumes standard daytime behavioral profile.
+        fhmm_breakdown[name] = apply_adaptive_hybrid_logic(
+            db=db,
+            user_id=user_id,
+            appliance_name=name,
+            manual_overrides={},
+            network_states={},
+            fhmm_predictions=normalized_fhmm,
+            registered_types=registered_types,
+            current_hour=12 
+        )
+        
+    raw_total_load = sum(fhmm_breakdown.values())
+    target_load = request.total_bill
+    
+    # Normalization Gate: Ensures the disaggregated sum matches the bill ground-truth (request.total_bill).
+    # This neutralizes AI overestimation and ensures total report consistency.
+    if raw_total_load > 0:
+        scaling_factor = target_load / raw_total_load
+        fhmm_breakdown = {k: round(v * scaling_factor, 2) for k, v in fhmm_breakdown.items()}
+    else:
+        # Fallback: If AI fails to detect load but bill exists, distribute proportionally.
+        avg_share = target_load / len(target_appliances)
+        fhmm_breakdown = {k: round(avg_share, 2) for k in target_appliances}
+
+    estimated_load = target_load
+    
+    # Heuristic: Proportional distribution of cost (currently mapping bill 1:1 to load).
+    estimated_cost = target_load 
+    carbon_footprint = estimated_load * 0.447 # Singapore Grid Emission Factor (avg)
+    
+    recommendations = generate_recommendations(fhmm_breakdown)
+    
+    # Developer Expectation: Generate static benchmark comparison (e.g. 10% reduction target).
+    benchmark_breakdown = {k: round(v * 0.9, 2) for k, v in fhmm_breakdown.items()}
+    
+    return {
+        "userId": user_id,
+        "blockId": request.block_id,
+        "month": request.month,
+        "year": request.year,
+        "estimated_load": round(estimated_load, 2),
+        "estimated_cost": round(estimated_cost, 2),
+        "carbon_footprint": round(carbon_footprint, 2),
+        "breakdown": fhmm_breakdown,
+        "benchmark_breakdown": benchmark_breakdown,
+        "recommendations": recommendations,
+        "anomalies": [],
+        "hourlyUsage": {str(now.hour): round(estimated_load, 2)},
+        "timestamp": now.isoformat()
+    }
+
 @app.post("/api/v1/disaggregate")
 async def process_realtime_telemetry(request: DisaggregationRequest, background_tasks: BackgroundTasks, token: dict = Depends(verify_firebase_token)):
-    # High-level: Implements continuous-priority sliding window real-time disaggregation with adaptive feedback.
+    # High-level: Implements continuous-priority sliding window real-time disaggregation.
     try:
         is_staff = db.get_user_role(token["uid"]) == 'staff'
         validate_user_ownership(request.user_id, token["uid"], is_staff=is_staff)
@@ -99,41 +218,46 @@ async def process_realtime_telemetry(request: DisaggregationRequest, background_
         if len(raw_readings) < 3:
             return format_api_response(False, message="Insufficient real-time sequence frame window.", status_code=400)
 
-        # Expanded Viterbi window constraint from 5 to 20 for improved temporal context.
-        if len(raw_readings) > 20:
-            raw_readings = raw_readings[-20:]
-
-        series_readings = pd.Series(raw_readings).rolling(window=3, min_periods=1, center=True).median().dropna()
-        smoothed_readings = [float(x) for x in series_readings.values]
-
-        if len(smoothed_readings) < 1:
-            return format_api_response(False, message="Filtered telemetry window contains no usable signal.", status_code=400)
-
-        # Offload the heavy FHMM disaggregation and blocking database logic to a separate thread.
-        # This prevents the ASGI event loop from being blocked by CPU-bound and synchronous I/O tasks.
+        # Expectation: Offloads CPU-bound disaggregation pipeline to non-blocking thread.
         payload = await asyncio.to_thread(
             _run_disaggregation_pipeline,
             user_id,
-            smoothed_readings,
+            raw_readings,
             request,
             registered_appliances
         )
 
-        # Offload Firestore persistence and monthly accumulation to background tasks for maximum responsiveness.
-        background_tasks.add_task(db.save_disaggregation_result, payload)
-        background_tasks.add_task(db.increment_monthly_consumption, user_id, payload['month'], payload['year'], payload['estimated_load'])
+        if payload.get('status') == 'success':
+            # Expectation: Firestore operations execute in background to unblock response.
+            background_tasks.add_task(db.save_realtime_result, payload)
+            background_tasks.add_task(db.increment_monthly_consumption, user_id, payload['month'], payload['year'], payload['estimated_load'])
 
-        return format_api_response(True, data=payload)
+            return format_api_response(True, data=payload)
+            
+        return format_api_response(False, message="Disaggregation pipeline failed to converge.", status_code=500)
 
     except Exception as e:
         logger.error(f"Real-time pipeline failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal processing error on streaming window.")
-
-def _run_disaggregation_pipeline(user_id, smoothed_readings, request, registered_appliances):
+    
+def _run_disaggregation_pipeline(user_id, raw_readings, request, registered_appliances):
     """
     Synchronous helper function to execute FHMM and adaptive logic.
     Runs in a background thread to avoid blocking the ASGI event loop.
     """
+    # Expanded Viterbi window constraint from 5 to 20 for improved temporal context.
+    if len(raw_readings) > 20:
+        readings_to_process = raw_readings[-20:]
+    else:
+        readings_to_process = raw_readings
+
+    series_readings = pd.Series(readings_to_process).rolling(window=3, min_periods=1, center=True).median().dropna()
+    smoothed_readings = [float(x) for x in series_readings.values]
+
+    if len(smoothed_readings) < 1:
+        # Fallback to raw if smoothing fails for extremely small windows (though main.py checks len < 3)
+        smoothed_readings = raw_readings
+
     fhmm_results = fhmm.disaggregate(smoothed_readings)
     
     # Developer Expectation: request schema must include network_states and manual_overrides
@@ -201,10 +325,10 @@ async def sync_daily_usage(request: SyncRequest, token: dict = Depends(verify_fi
         is_staff = db.get_user_role(token["uid"]) == 'staff'
         validate_user_ownership(request.user_id, token["uid"], is_staff=is_staff)
         appliances = db.get_user_appliances(request.user_id)
-        results = simulator.run_monte_carlo(appliances, request.context)
+        results = await asyncio.to_thread(simulator.run_monte_carlo, appliances, request.context)
         
         # Update daily_usage subcollection for frontend rendering.
-        db.save_daily_usage(request.user_id, results['hourly_profile'])
+        await asyncio.to_thread(db.save_daily_usage, request.user_id, results['hourly_profile'])
         return format_api_response(True, message="Daily sync complete")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -226,7 +350,6 @@ def generate_recommendations(breakdown: dict) -> list:
 
 @app.post("/api/v1/feedback")
 async def handle_feedback(request: FeedbackRequest, token: dict = Depends(verify_firebase_token)):
-    # Processes corrections and applies reinforcement learning adjustments.
     try:
         is_staff = db.get_user_role(token["uid"]) == 'staff'
         validate_user_ownership(request.user_id, token["uid"], is_staff=is_staff)
@@ -241,14 +364,9 @@ async def handle_feedback(request: FeedbackRequest, token: dict = Depends(verify
         learning_rate = 0.05
         current_p = app_data.get('prob_day', 0.5)
 
-        # Behavioral adjustment: Tune usage probabilities
         new_p = max(0.01, current_p - learning_rate) if is_false_positive else min(0.99, current_p + learning_rate)
         db.update_single_appliance_prob(request.user_id, request.appliance_name, new_p)
-
-        # Signature adjustment: Tune FHMM emission parameters (Advanced Loop)
         if is_false_positive:
-            # If the AI over-predicted, slightly increase the variance (std_dev) 
-            # to make the model more 'skeptical' of noisy signals for this appliance.
             current_std = app_data.get('std_dev', 1.0)
             db.update_appliance_signature_meta(request.user_id, request.appliance_name, {
                 "std_dev": current_std * 1.05
@@ -287,7 +405,6 @@ async def seed_exact_synthetic_redd(request: SeedReddRequest, token: dict = Depe
                     if table_path in store:
                         df_meter = store.get(table_path)
                         
-                        # Check common column names for timestamps in structural HDF5 exports
                         if 'index' in df_meter.columns:
                             df_meter.index = pd.to_datetime(df_meter['index'])
                         elif 'timestamp' in df_meter.columns:
@@ -302,13 +419,11 @@ async def seed_exact_synthetic_redd(request: SeedReddRequest, token: dict = Depe
                         elif 'values' in df_meter.columns:
                             raw_series = df_meter['values']
                         else:
-                            # Use the last column if the first column was the timestamp index
                             raw_series = df_meter.iloc[:, -1]
                         
                         if not isinstance(raw_series.index, pd.DatetimeIndex):
                             raise ValueError(f"Could not convert HDF5 index to DatetimeIndex for {col_name}. Current columns: {list(df_meter.columns)}")
 
-                        # Resample down to 1-hour chunks safely
                         resampled_series[col_name] = raw_series.resample('1h').mean().dropna()
                         del df_meter, raw_series
                     else:
@@ -331,7 +446,6 @@ async def seed_exact_synthetic_redd(request: SeedReddRequest, token: dict = Depe
         # Developer Expectation: Shift the dataframe index vector so all generated records match the request boundary context.
         df.index = df.index + time_delta_offset
 
-        # Clear secondary dictionary tracking structures from heap memory
         del resampled_series
 
         batch = db.db.batch()

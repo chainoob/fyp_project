@@ -454,6 +454,15 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
                     } else {
                       await room.reference.update(roomData);
                     }
+
+                    // High-Level: Synchronize unit assignment to the student's user profile.
+                    if (selectedStudent != null) {
+                      await _db.collection('users').doc(selectedStudent!['uid']).set({
+                        'assignedUnitId': widget.unitId,
+                        'dormBlock': widget.blockName,
+                      }, SetOptions(merge: true));
+                    }
+
                     if (context.mounted) Navigator.pop(context);
                   } catch (e) {
                     if (context.mounted) {
@@ -505,16 +514,16 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
 
           return Column(
             children: [
-              if (targetStudentId != null)
+              if (targetStudentId != null) ...[
                 Padding(
-                  padding: const EdgeInsets.all(16.0),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: BillSubmissionCard(
-                    // Fixed: Pass the student UID to anchor telemetry lookup.
-                    userId: targetStudentId, 
+                    userId: widget.unitId, 
                     blockId: widget.blockId,
+                    telemetrySourceId: targetStudentId,
                   ),
-                )
-              else
+                ),
+              ] else ...[
                 const Padding(
                   padding: EdgeInsets.all(16.0),
                   child: Text(
@@ -522,6 +531,7 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
                     style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)
                   ),
                 ),
+              ],
               
               Expanded(
                 child: GridView.builder(

@@ -25,6 +25,12 @@ abstract class EnergyRepository {
   Future<void> updateApplianceStatus(String userId, String appId, String status);
   Stream<DocumentSnapshot> listenToDisaggregation(String userId);
   Future<void> triggerDisaggregation(String userId, Map<String, dynamic> context);
+  Future<void> triggerAggregation({
+    required String scope,
+    required int month,
+    required int year,
+    String? blockId,
+  });
   Future<String> getStudentDisplayId(String uid);
 
   Stream<List<double>> getLiveReadingsStream(String userId);
@@ -60,7 +66,10 @@ class FirestoreRepository implements EnergyRepository {
   final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
   
   // High-Level: Re-mapped the endpoint target route variables to match the production container paths
-  final String _baseUrl = 'https://ml-backend-338592292074.asia-southeast1.run.app';
+  static const String _baseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'https://ml-backend-338592292074.asia-southeast1.run.app',
+  );
 
   @override
   Stream<Users?> get authStateChanges {
@@ -182,6 +191,7 @@ class FirestoreRepository implements EnergyRepository {
       },
       body: jsonEncode({
         'userId': userId,
+        'telemetrySourceId': context['telemetrySourceId'],
         'totalBill': context['totalBill'],
         'month': context['month'],
         'year': context['year'],
@@ -193,40 +203,12 @@ class FirestoreRepository implements EnergyRepository {
     if (response.statusCode == 200 || response.statusCode == 202) {
       final Map<String, dynamic> decoded = jsonDecode(response.body);
       
-      if (decoded['status'] == 'success' && decoded['data'] != null) {
-        final Map<String, dynamic> dataPayload = decoded['data'] as Map<String, dynamic>;
-        
-        // High-Level: Synchronize incoming HTTP response directly to Firestore.
-        // Developer Expectation: This implicitly regenerates the deleted collection.
-        await _db.collection('disaggregation_results').add({
-          'userId': dataPayload['userId'] ?? userId,
-          'month': dataPayload['month'] ?? context['month'],
-          'year': dataPayload['year'] ?? context['year'],
-          'carbonFootprint': (dataPayload['carbon_footprint'] as num?)?.toDouble() ?? 0.0,
-          'summary': {
-            'totalConsumption': (dataPayload['estimated_load'] as num?)?.toDouble() ?? 0.0,
-            'totalCost': (dataPayload['estimated_cost'] as num?)?.toDouble() ?? (context['totalBill'] as num).toDouble(),
-            'keyIssue': (dataPayload['recommendations'] as List?)?.isNotEmpty == true 
-                ? (dataPayload['recommendations'] as List).first.toString() 
-                : "Optimal efficiency.",
-            'recommendations': List<String>.from(dataPayload['recommendations'] ?? []),
-          },
-          'kpis': {
-            'totalKwh': (dataPayload['estimated_load'] as num?)?.toDouble() ?? 0.0,
-            'dailyAvgKwh': ((dataPayload['estimated_load'] as num?)?.toDouble() ?? 0.0) / 30,
-            'peakKwh': 0.0, 
-            'peakTime': "00:00",
-            'totalCost': (dataPayload['estimated_cost'] as num?)?.toDouble() ?? (context['totalBill'] as num).toDouble(),
-          },
-          'applianceBreakdown': Map<String, double>.from(dataPayload['breakdown'] ?? {}),
-          'benchmarkBreakdown': Map<String, double>.from(dataPayload['benchmark_breakdown'] ?? {}),
-          'anomalies': List<String>.from(dataPayload['anomalies'] ?? []),
-          'hourlyUsage': Map<String, dynamic>.from(dataPayload['hourlyUsage'] ?? {}),
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-      } else {
+      if (decoded['status'] != 'success') {
         throw Exception(decoded['message'] ?? "Pipeline logic failure.");
       }
+      // High-Level: Redundant client-side write removed.
+      // Developer Expectation: The ML backend already persists results via service account; 
+      // the client relies on the async listener in EnergyProvider to detect completion.
     } else {
       try {
         final Map<String, dynamic> errorData = jsonDecode(response.body);
@@ -234,6 +216,101 @@ class FirestoreRepository implements EnergyRepository {
       } catch (_) {
         throw Exception("Cloud Run ingestion rejected payload status code: ${response.statusCode}");
       }
+    }
+  }
+
+  @override
+  Future<void> triggerAggregation({
+    required String scope,
+    required int month,
+    required int year,
+    String? blockId,
+  }) async {
+    try {
+      final String lookupKey = (scope.contains('Campus')) ? 'aggregate' : blockId!;
+
+      Query unitsQuery = _db.collection('disaggregation_results')
+          .where('month', isEqualTo: month)
+          .where('year', isEqualTo: year);
+
+      final snapshot = await unitsQuery.get();
+
+      if (snapshot.docs.isEmpty) {
+        throw Exception("No unit data found to compile. Staff must submit bills first.");
+      }
+
+      double totalKwh = 0.0;
+      double totalCost = 0.0;
+      double totalCarbon = 0.0;
+      Map<String, double> totalBreakdown = {};
+      Set<String> allAnomalies = {};
+      Map<String, double> totalHourly = {};
+
+      bool processedAny = false;
+
+      for (var doc in snapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>;
+        
+        // Avoid double-counting aggregates
+        if (doc.id == 'aggregate' || data['userId'] == 'aggregate' || data['userId'] == blockId) continue;
+        
+        // Scope filtering
+        if (scope.contains('Block') && data['blockId'] != blockId) continue;
+
+        processedAny = true;
+        
+        final report = EnergyReportData.fromFirestore(doc);
+
+        totalKwh += report.summary.totalConsumption;
+        totalCost += report.summary.totalCost;
+        totalCarbon += report.carbonFootprint;
+        allAnomalies.addAll(report.anomalies);
+
+        report.applianceBreakdown.forEach((key, value) {
+          totalBreakdown[key] = (totalBreakdown[key] ?? 0.0) + value;
+        });
+
+        report.hourlyUsage.forEach((hour, value) {
+          totalHourly[hour.toString()] = (totalHourly[hour.toString()] ?? 0.0) + value;
+        });
+      }
+
+      if (!processedAny) {
+        throw Exception("No data matches the selected $scope criteria.");
+      }
+
+      await _db.collection('disaggregation_results').doc(lookupKey).set({
+        'userId': lookupKey,
+        'scope': scope,
+        'month': month,
+        'year': year,
+        if (blockId != null) 'blockId': blockId,
+        'estimated_load': totalKwh,
+        'estimated_cost': totalCost,
+        'carbon_footprint': totalCarbon,
+        'breakdown': totalBreakdown,
+        'anomalies': allAnomalies.toList(),
+        'hourlyUsage': totalHourly,
+        'summary': {
+          'totalConsumption': totalKwh,
+          'totalCost': totalCost,
+          'keyIssue': "Aggregated $scope report generated.",
+          'recommendations': ["Consolidate optimizations across $scope."],
+          'comparisonPercent': 0.0,
+        },
+        'kpis': {
+          'totalKwh': totalKwh,
+          'dailyAvgKwh': totalKwh / 30.0,
+          'peakKwh': 0.0, 
+          'peakTime': "N/A",
+          'totalCost': totalCost,
+          'changePercent': 0.0,
+        },
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      AppLog.error("Aggregation Failure", e);
+      rethrow;
     }
   }
 
@@ -259,8 +336,43 @@ class FirestoreRepository implements EnergyRepository {
   }
 
   @override
-  Stream<Map<String, dynamic>> getStudentGoalStream(String uid) =>
-      _db.collection('users').doc(uid).snapshots().map((doc) => doc.data() ?? {});
+  Stream<Map<String, dynamic>> getStudentGoalStream(String uid) {
+    final StreamController<Map<String, dynamic>> controller = StreamController<Map<String, dynamic>>();
+    
+    final now = DateTime.now();
+    final String statsId = "${now.year}_${now.month}";
+    
+    Map<String, dynamic> mergedData = {
+      'energyGoal': 0.0,
+      'currentUsage': 0.0,
+    };
+
+    StreamSubscription? userSub;
+    StreamSubscription? statsSub;
+
+    controller.onListen = () {
+      userSub = _db.collection('users').doc(uid).snapshots().listen((doc) {
+        if (doc.exists) {
+          mergedData['energyGoal'] = (doc.data()?['energyGoal'] ?? 0.0).toDouble();
+          controller.add(Map.from(mergedData));
+        }
+      });
+
+      statsSub = _db.collection('users').doc(uid).collection('stats').doc(statsId).snapshots().listen((doc) {
+        if (doc.exists) {
+          mergedData['currentUsage'] = (doc.data()?['total_kwh'] ?? 0.0).toDouble();
+          controller.add(Map.from(mergedData));
+        }
+      });
+    };
+
+    controller.onCancel = () {
+      userSub?.cancel();
+      statsSub?.cancel();
+    };
+
+    return controller.stream;
+  }
 
   @override
   Future<void> updateStudentGoal(String uid, double newGoal) async =>
@@ -311,8 +423,11 @@ class FirestoreRepository implements EnergyRepository {
       if (currentSnapshot.docs.isEmpty) {
         throw Exception("Analysis data unavailable for $lookupKey ($month/$year). Awaiting staff bill submission.");
       }
-      final data = currentSnapshot.docs.first.data();
+      
+      final currentDoc = currentSnapshot.docs.first;
+      final currentData = EnergyReportData.fromFirestore(currentDoc);
 
+      // Fetch previous month for comparison
       int prevMonth = month == 1 ? 12 : month - 1;
       int prevYear = month == 1 ? year - 1 : year;
       
@@ -323,76 +438,39 @@ class FirestoreRepository implements EnergyRepository {
           .limit(1)
           .get();
 
-      final Map<String, dynamic> summaryMap = data['summary'] as Map<String, dynamic>? ?? {};
-      final Map<String, dynamic> kpisMap = data['kpis'] as Map<String, dynamic>? ?? {};
-
-      double currentLoad = (summaryMap['totalConsumption'] as num?)?.toDouble() ?? 
-                           (kpisMap['totalKwh'] as num?)?.toDouble() ?? 
-                           (data['estimated_load'] as num?)?.toDouble() ?? 0.0;
-
-      double estimatedCost = (summaryMap['totalCost'] as num?)?.toDouble() ?? 
-                             (kpisMap['totalCost'] as num?)?.toDouble() ?? 
-                             (data['estimated_cost'] as num?)?.toDouble() ?? 0.0;
-      
-      double carbonFootprint = (data['carbonFootprint'] as num?)?.toDouble() ?? 
-                               (data['carbon_footprint'] as num?)?.toDouble() ?? 0.0;
-      
       double comparisonPercent = 0.0;
       if (prevSnapshot.docs.isNotEmpty) {
-        final prevData = prevSnapshot.docs.first.data();
-        final Map<String, dynamic> prevSummary = prevData['summary'] as Map<String, dynamic>? ?? {};
-        double prevLoad = (prevSummary['totalConsumption'] as num?)?.toDouble() ?? 0.0;
-        if (prevLoad > 0) {
-          comparisonPercent = ((currentLoad - prevLoad) / prevLoad) * 100;
+        final prevData = EnergyReportData.fromFirestore(prevSnapshot.docs.first);
+        if (prevData.summary.totalConsumption > 0) {
+          comparisonPercent = ((currentData.summary.totalConsumption - prevData.summary.totalConsumption) / prevData.summary.totalConsumption) * 100;
         }
       }
 
-      final breakdown = Map<String, double>.from(data['applianceBreakdown'] ?? data['breakdown'] ?? {});
-      
-      final hourly = (data['hourlyUsage'] as Map<String, dynamic>? ?? {}).map(
-        (k, v) => MapEntry(int.parse(k), (v as num).toDouble())
-      );
-
-      double peakKwh = (kpisMap['peakKwh'] as num?)?.toDouble() ?? 0.0;
-      String peakTime = kpisMap['peakTime'] as String? ?? "00:00";
-      
-      if (peakKwh == 0.0 && hourly.isNotEmpty) {
-        int peakHour = 0;
-        hourly.forEach((hour, val) {
-          if (val > peakKwh) {
-            peakKwh = val;
-            peakHour = hour;
-          }
-        });
-        peakTime = "${peakHour.toString().padLeft(2, '0')}:00";
-      }
-
-      final recommendations = List<String>.from(summaryMap['recommendations'] ?? data['recommendations'] ?? []);
-
+      // Return a copy with the calculated comparison
       return EnergyReportData(
-        id: lookupKey,
+        id: currentData.id,
         summary: ReportSummary(
-          totalConsumption: currentLoad,
+          totalConsumption: currentData.summary.totalConsumption,
           comparisonPercent: comparisonPercent,
-          totalCost: estimatedCost,
-          keyIssue: summaryMap['keyIssue'] ?? (recommendations.isNotEmpty ? recommendations.first : "Optimal efficiency."),
-          recommendations: recommendations,
+          totalCost: currentData.summary.totalCost,
+          keyIssue: currentData.summary.keyIssue,
+          recommendations: currentData.summary.recommendations,
         ),
         kpis: ReportKPIs(
-          totalKwh: currentLoad,
-          dailyAvgKwh: currentLoad / 30,
-          peakKwh: peakKwh,
-          peakTime: peakTime,
-          totalCost: estimatedCost,
+          totalKwh: currentData.kpis.totalKwh,
+          dailyAvgKwh: currentData.kpis.dailyAvgKwh,
+          peakKwh: currentData.kpis.peakKwh,
+          peakTime: currentData.kpis.peakTime,
+          totalCost: currentData.kpis.totalCost,
           changePercent: comparisonPercent,
         ),
-        carbonFootprint: carbonFootprint,
-        usageTrend: [], 
-        applianceBreakdown: breakdown,
-        benchmarkBreakdown: Map<String, double>.from(data['benchmarkBreakdown'] ?? data['benchmark_breakdown'] ?? {}),
-        anomalies: List<String>.from(data['anomalies'] ?? []),
-        hourlyUsage: hourly,
-        costBreakdown: breakdown.map((key, value) => MapEntry(key, currentLoad > 0 ? value * (estimatedCost / currentLoad) : 0.0)),
+        carbonFootprint: currentData.carbonFootprint,
+        usageTrend: currentData.usageTrend,
+        applianceBreakdown: currentData.applianceBreakdown,
+        benchmarkBreakdown: currentData.benchmarkBreakdown,
+        anomalies: currentData.anomalies,
+        hourlyUsage: currentData.hourlyUsage,
+        costBreakdown: currentData.costBreakdown,
       );
     } catch (e) {
       rethrow;

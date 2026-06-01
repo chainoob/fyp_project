@@ -1,4 +1,6 @@
-// lib/models/disaggregation_response.dart
+// lib/models/disaggregation_response.dart6
+
+
 
 class DisaggregationResponse {
   final String status;
@@ -58,29 +60,41 @@ class DisaggregationData {
     required this.timestamp,
   });
 
+  static double _safeDouble(dynamic v) {
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v) ?? 0.0;
+    return 0.0;
+  }
+
   factory DisaggregationData.fromJson(Map<String, dynamic> json) {
-    final hourlyRaw = json['hourlyUsage'] as Map<String, dynamic>? ?? {};
-    final Map<int, double> hourlyParsed = hourlyRaw.map(
-      (key, value) => MapEntry(int.parse(key), (value as num).toDouble()),
+    final Map<dynamic, dynamic> hourlyRaw = json['hourlyUsage'] as Map? ?? {};
+    final Map<int, double> hourlyParsed = Map<int, double>.from(
+      hourlyRaw.map(
+        (key, value) => MapEntry(double.tryParse(key.toString())?.toInt() ?? 0, _safeDouble(value)),
+      ),
     );
 
-    final breakdownRaw = (json['breakdown'] ?? json['applianceBreakdown'] ?? {}) as Map<String, dynamic>;
-    final Map<String, double> breakdownParsed = breakdownRaw.map(
-      (key, value) => MapEntry(key, (value as num).toDouble()),
+    final Map<dynamic, dynamic> breakdownRaw = (json['breakdown'] ?? json['applianceBreakdown'] ?? {}) as Map;
+    final Map<String, double> breakdownParsed = Map<String, double>.from(
+      breakdownRaw.map(
+        (key, value) => MapEntry(key.toString(), _safeDouble(value)),
+      ),
     );
 
-    final benchmarkRaw = (json['benchmark_breakdown'] ?? json['benchmarkBreakdown'] ?? {}) as Map<String, dynamic>;
-    final Map<String, double> benchmarkParsed = benchmarkRaw.map(
-      (key, value) => MapEntry(key, (value as num).toDouble()),
+    final Map<dynamic, dynamic> benchmarkRaw = (json['benchmark_breakdown'] ?? json['benchmarkBreakdown'] ?? {}) as Map;
+    final Map<String, double> benchmarkParsed = Map<String, double>.from(
+      benchmarkRaw.map(
+        (key, value) => MapEntry(key.toString(), _safeDouble(value)),
+      ),
     );
 
     return DisaggregationData(
       userId: json['userId'] as String? ?? json['user_id'] as String? ?? '',
       month: json['month'] as int? ?? 1,
       year: json['year'] as int? ?? 2026,
-      estimatedLoad: (json['estimated_load'] as num?)?.toDouble() ?? (json['estimatedLoad'] as num?)?.toDouble() ?? 0.0,
-      estimatedCost: (json['estimated_cost'] as num?)?.toDouble() ?? (json['estimatedCost'] as num?)?.toDouble() ?? 0.0,
-      carbonFootprint: (json['carbon_footprint'] as num?)?.toDouble() ?? (json['carbonFootprint'] as num?)?.toDouble() ?? 0.0,
+      estimatedLoad: _safeDouble(json['estimated_load'] ?? json['estimatedLoad']),
+      estimatedCost: _safeDouble(json['estimated_cost'] ?? json['estimatedCost']),
+      carbonFootprint: _safeDouble(json['carbon_footprint'] ?? json['carbonFootprint']),
       breakdown: breakdownParsed,
       benchmarkBreakdown: benchmarkParsed,
       anomalies: List<String>.from(json['anomalies'] as List? ?? []),

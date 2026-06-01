@@ -103,22 +103,41 @@ class FirebaseClient:
         return data
 
     def save_disaggregation_result(self, payload: dict):
-        # High-level: Persists disaggregation model output with strict type-safety and logging.
+        # High-level: Persists disaggregation model output with deterministic IDs to prevent duplication.
         try:
-            AppLog.info("FIRESTORE_SAVE", f"Attempting to save result for {payload.get('userId')} ({payload.get('month')}/{payload.get('year')})")
+            user_id = payload.get('userId')
+            month = payload.get('month')
+            year = payload.get('year')
+            
+            AppLog.info("FIRESTORE_SAVE", f"Attempting to save result for {user_id} ({month}/{year})")
             
             # Developer Expectation: Deep-clean the payload to prevent gRPC serialization errors.
             cleaned_payload = self._clean_numpy(payload)
+            
+            # Use deterministic ID for idempotency: userId_month_year
+            doc_id = f"{user_id}_{month}_{year}"
             
             # Explicitly ensure timestamp is a native DateTime or SERVER_TIMESTAMP
             if 'timestamp' in cleaned_payload and not isinstance(cleaned_payload['timestamp'], (datetime.datetime, str)):
                 cleaned_payload['timestamp'] = firestore.SERVER_TIMESTAMP
 
-            doc_ref = self.db.collection('disaggregation_results').add(cleaned_payload)
-            AppLog.info("FIRESTORE_SAVE", f"SUCCESS: Result persisted with ID: {doc_ref[1].id}")
+            self.db.collection('disaggregation_results').document(doc_id).set(cleaned_payload)
+            AppLog.info("FIRESTORE_SAVE", f"SUCCESS: Result persisted with deterministic ID: {doc_id}")
         except Exception as e:
             AppLog.error("FIRESTORE_SAVE", f"CRITICAL PERSISTENCE FAILURE: {str(e)}")
             raise e
+
+    def save_realtime_result(self, payload: dict):
+        # High-level: Persists transient real-time windows to a separate collection to prevent report corruption.
+        try:
+            user_id = payload.get('userId')
+            cleaned_payload = self._clean_numpy(payload)
+            
+            # Real-time results are transient; we use the userId as document ID to keep only the latest window.
+            self.db.collection('realtime_results').document(user_id).set(cleaned_payload)
+            AppLog.info("FIRESTORE_REALTIME", f"Real-time result cached for user: {user_id}")
+        except Exception as e:
+            AppLog.error("FIRESTORE_REALTIME", f"Real-time persistence failure: {str(e)}")
 
     def save_daily_usage(self, user_id: str, hourly_profile: dict):
         # High-level: Stores daily time-series breakdown for UI visualization.

@@ -52,3 +52,30 @@ class ApplianceCard extends StatelessWidget {
     );
   }
 }
+
+class AppAlertDialog extends StatelessWidget {
+  final String title;
+  final String content;
+  final List<Widget> actions;
+
+  const AppAlertDialog({
+    required this.title,
+    required this.content,
+    required this.actions,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppTheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Colors.white12),
+      ),
+      title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+      content: Text(content, style: const TextStyle(color: Colors.white70)),
+      actions: actions,
+    );
+  }
+}
