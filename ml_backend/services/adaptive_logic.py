@@ -30,7 +30,7 @@ def get_tod_probability(db, user_id: str, appliance: str, current_hour: int) -> 
     except Exception:
         return 0.0
     
-def apply_adaptive_hybrid_logic(db, user_id, appliance_name, manual_overrides, network_states, fhmm_predictions, registered_types, current_hour):
+async def apply_adaptive_hybrid_logic(db, user_id, appliance_name, manual_overrides, network_states, fhmm_predictions, registered_types, current_hour):
     # High-level: Executes 3-Tier Hybrid Logic with dynamic adaptive ToD weighting.
     key = appliance_name.lower()
     final_state = None

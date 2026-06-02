@@ -10,13 +10,14 @@ class ApiService {
   );
   final NetworkStateDetector _detector = NetworkStateDetector();
 
+  // RESTORED: Real-time ML Pipeline invocation
   Future<Map<String, dynamic>> triggerDisaggregation({
     required String userId,
     required List<double> readings,
     required Map<String, double?> manualOverrides,
     required List<String> registeredAppliances,
   }) async {
-    final Uri url = Uri.parse('$_baseUrl/api/v1/trigger-disaggregate');
+    final Uri url = Uri.parse('$_baseUrl/api/v1/realtime-disaggregations');
     
     final User? user = FirebaseAuth.instance.currentUser;
     if (user == null) throw Exception("User authorization missing.");
@@ -59,7 +60,7 @@ class ApiService {
   }
 
   Future<void> seedSyntheticReddData(String userId, {int? month, int? year}) async {
-    final url = Uri.parse('$_baseUrl/api/v1/dev/seed-synthetic-redd');
+    final url = Uri.parse('$_baseUrl/api/v1/dev/redd-seeds');
     
     final User? user = FirebaseAuth.instance.currentUser;
     if (user == null) throw Exception("User authorization missing.");
@@ -74,7 +75,7 @@ class ApiService {
         'Authorization': 'Bearer $idToken',
       },
       body: jsonEncode({
-        'user_id': userId,
+        'userId': userId,
         'month': month ?? now.month,
         'year': year ?? now.year,
       }),

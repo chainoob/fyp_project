@@ -14,7 +14,7 @@ class StudentShell extends StatefulWidget {
 
 class _StudentShellState extends State<StudentShell> {
   int _idx = 0;
-  String? _lastUnitId; // Tracks state to prevent infinite stream reloading
+  bool _isInitialized = false;
 
   final List<Widget> _screens = [
     const StudentDashboard(),    
@@ -37,24 +37,21 @@ class _StudentShellState extends State<StudentShell> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final user = context.watch<AppAuthProvider>().currentUser;
-    final currentUnitId = user?.assignedUnitId;
     
-    if (user != null && _lastUnitId != currentUnitId) {
-      _lastUnitId = currentUnitId;
+    if (user != null && !_isInitialized) {
+      _isInitialized = true;
       final now = DateTime.now();
-      final reportTargetId = currentUnitId ?? user.uid;
       
-      context.read<EnergyProvider>().subscribeToTelemetry(user.uid, targetReportId: reportTargetId);
-      
-      context.read<EnergyProvider>().subscribeToReport(
-        scope: currentUnitId != null ? 'Unit' : 'Personal',
+      // STRUCTURAL FIX: IoT Telemetry Removed. Proceed strictly to the identity-bound batch fetch.
+      context.read<EnergyProvider>().loadReport(
+        scope: 'Personal',
         month: now.month,
         year: now.year,
-        unitId: reportTargetId,
+        unitId: user.uid,
       );
     }
   }
-
+  
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -206,10 +203,6 @@ class _StudentDashboardState extends State<StudentDashboard> {
     final energyProvider = context.watch<EnergyProvider>();
     
     final report = energyProvider.currentReport;
-    final List<double> liveTelemetryBuffer = energyProvider.liveReadings;
-    
-    // Evaluate stream connection state for diagnostics
-    final bool isOffline = liveTelemetryBuffer.isEmpty;
     
     // Dynamically fold the actual usage from the AI report
     final double currentTotalKwh = report != null 
@@ -228,10 +221,6 @@ class _StudentDashboardState extends State<StudentDashboard> {
     final String displayCarbon = report != null 
         ? "${report.carbonFootprint.toStringAsFixed(1)} kg" 
         : "0.0 kg";
-      
-    final String displayLoad = !isOffline
-        ? "${(liveTelemetryBuffer.last / 1000).toStringAsFixed(2)} kW"
-        : "0.00 kW";
 
     return Scaffold(
       backgroundColor: _bgDark,
@@ -259,7 +248,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
                 ),
               ),
               const SizedBox(height: 24),
-              const Text("Real-Time Metrics", style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
+              const Text("Monthly Insights", style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -270,10 +259,10 @@ class _StudentDashboardState extends State<StudentDashboard> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Icon(Icons.bolt, color: isOffline ? Colors.redAccent : Colors.white, size: 24),
+                          Icon(Icons.analytics, color: energyProvider.isLoading ? Colors.white54 : const Color(0xFF00E5FF), size: 24),
                           const SizedBox(height: 12),
-                          Text(displayLoad, style: TextStyle(color: _textPrimary, fontSize: 20, fontWeight: FontWeight.bold)),
-                          Text(isOffline ? "Sensor Offline" : "Live Draw", style: TextStyle(color: isOffline ? Colors.redAccent : Colors.white54, fontSize: 12)),
+                          Text(report != null ? "Synced" : (energyProvider.isLoading ? "Loading" : "Pending"), style: TextStyle(color: _textPrimary, fontSize: 20, fontWeight: FontWeight.bold)),
+                          const Text("AI Batch Status", style: TextStyle(color: Colors.white54, fontSize: 12)),
                         ],
                       ),
                     ),
@@ -286,10 +275,10 @@ class _StudentDashboardState extends State<StudentDashboard> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text("CO₂", style: TextStyle(color: AppTheme.ecoTeal, fontWeight: FontWeight.bold)),
+                          const Text("CO₂", style: TextStyle(color: AppTheme.ecoTeal, fontWeight: FontWeight.bold, fontSize: 20)),
                           const SizedBox(height: 12),
                           Text(displayCarbon, style: TextStyle(color: _textPrimary, fontSize: 20, fontWeight: FontWeight.bold)),
-                          const Text("Carbon Footprint", style: TextStyle(color: Colors.white54, fontSize: 12)),
+                          const Text("Monthly Footprint", style: TextStyle(color: Colors.white54, fontSize: 12)),
                         ],
                       ),
                     ),

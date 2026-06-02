@@ -374,8 +374,12 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
     final capacityController = TextEditingController(text: room?['capacity']?.toString() ?? '1');
     
     Map<String, dynamic>? selectedStudent;
+    Map<String, dynamic>? originalStudent;
+    
+    // Extract existing occupant data for assignment tracking.
     if (room != null && room['occupant'] != null) {
       selectedStudent = Map<String, dynamic>.from(room['occupant']);
+      originalStudent = Map<String, dynamic>.from(room['occupant']); 
     }
 
     await showDialog(
@@ -449,18 +453,29 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
                   };
 
                   try {
+                    // Persist room state.
                     if (room == null) {
                       await _roomsRef.add({...roomData, 'createdAt': FieldValue.serverTimestamp()});
                     } else {
                       await room.reference.update(roomData);
                     }
 
-                    // High-Level: Synchronize unit assignment to the student's user profile.
+                    // Wipe assignment for displaced occupants.
+                    if (originalStudent != null && originalStudent['uid'] != selectedStudent?['uid']) {
+                      await _db.collection('users').doc(originalStudent['uid']).update({
+                        'assignedUnitId': FieldValue.delete(),
+                        'dormBlock': FieldValue.delete(),
+                        'updatedAt': FieldValue.serverTimestamp(),
+                      });
+                    }
+
+                    // Enforce assignment state for current occupant.
                     if (selectedStudent != null) {
-                      await _db.collection('users').doc(selectedStudent!['uid']).set({
+                      await _db.collection('users').doc(selectedStudent!['uid']).update({
                         'assignedUnitId': widget.unitId,
                         'dormBlock': widget.blockName,
-                      }, SetOptions(merge: true));
+                        'updatedAt': FieldValue.serverTimestamp(),
+                      });
                     }
 
                     if (context.mounted) Navigator.pop(context);
@@ -520,7 +535,7 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
                   child: BillSubmissionCard(
                     userId: widget.unitId, 
                     blockId: widget.blockId,
-                    telemetrySourceId: targetStudentId,
+                    telemetrySourceId: widget.unitId, // Enforce hardware unit telemetry query mapping.
                   ),
                 ),
               ] else ...[

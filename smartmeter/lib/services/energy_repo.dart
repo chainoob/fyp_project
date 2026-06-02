@@ -1,5 +1,3 @@
-// smartmeter/lib/services/energy_repo.dart
-
 import 'dart:async';
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -65,7 +63,6 @@ class FirestoreRepository implements EnergyRepository {
   FirebaseFirestore get _db => FirebaseFirestore.instance;
   final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
   
-  // High-Level: Re-mapped the endpoint target route variables to match the production container paths
   static const String _baseUrl = String.fromEnvironment(
     'API_BASE_URL',
     defaultValue: 'https://ml-backend-338592292074.asia-southeast1.run.app',
@@ -176,9 +173,9 @@ class FirestoreRepository implements EnergyRepository {
   Future<void> updateApplianceStatus(String userId, String appId, String status) async =>
       await _db.collection('users').doc(userId).collection('appliances').doc(appId).update({'status': status});
 
- @override
- Future<void> triggerDisaggregation(String userId, Map<String, dynamic> context) async {
-    final url = Uri.parse('$_baseUrl/api/v1/trigger-disaggregation');    
+  @override
+  Future<void> triggerDisaggregation(String userId, Map<String, dynamic> context) async {
+    final url = Uri.parse('$_baseUrl/api/v1/disaggregations');    
     final User? user = _auth.currentUser;
     if (user == null) throw Exception("User authorization missing.");
     final String? idToken = await user.getIdToken();
@@ -196,19 +193,16 @@ class FirestoreRepository implements EnergyRepository {
         'month': context['month'],
         'year': context['year'],
         'scope': context['scope'] ?? 'Unit',
+        'blockId': context['blockId'],
         'trainModel': context['trainModel'] ?? false,
       }),
     );
 
     if (response.statusCode == 200 || response.statusCode == 202) {
       final Map<String, dynamic> decoded = jsonDecode(response.body);
-      
       if (decoded['status'] != 'success') {
         throw Exception(decoded['message'] ?? "Pipeline logic failure.");
       }
-      // High-Level: Redundant client-side write removed.
-      // Developer Expectation: The ML backend already persists results via service account; 
-      // the client relies on the async listener in EnergyProvider to detect completion.
     } else {
       try {
         final Map<String, dynamic> errorData = jsonDecode(response.body);
@@ -226,91 +220,36 @@ class FirestoreRepository implements EnergyRepository {
     required int year,
     String? blockId,
   }) async {
-    try {
-      final String lookupKey = (scope.contains('Campus')) ? 'aggregate' : blockId!;
+    if (scope.toLowerCase().contains('campus')) {
+      final url = Uri.parse('$_baseUrl/api/v1/admin/aggregations');
+      
+      final User? user = _auth.currentUser;
+      if (user == null) throw Exception("User authorization missing.");
+      
+      final String? idToken = await user.getIdToken();
 
-      Query unitsQuery = _db.collection('disaggregation_results')
-          .where('month', isEqualTo: month)
-          .where('year', isEqualTo: year);
-
-      final snapshot = await unitsQuery.get();
-
-      if (snapshot.docs.isEmpty) {
-        throw Exception("No unit data found to compile. Staff must submit bills first.");
-      }
-
-      double totalKwh = 0.0;
-      double totalCost = 0.0;
-      double totalCarbon = 0.0;
-      Map<String, double> totalBreakdown = {};
-      Set<String> allAnomalies = {};
-      Map<String, double> totalHourly = {};
-
-      bool processedAny = false;
-
-      for (var doc in snapshot.docs) {
-        final data = doc.data() as Map<String, dynamic>;
-        
-        // Avoid double-counting aggregates
-        if (doc.id == 'aggregate' || data['userId'] == 'aggregate' || data['userId'] == blockId) continue;
-        
-        // Scope filtering
-        if (scope.contains('Block') && data['blockId'] != blockId) continue;
-
-        processedAny = true;
-        
-        final report = EnergyReportData.fromFirestore(doc);
-
-        totalKwh += report.summary.totalConsumption;
-        totalCost += report.summary.totalCost;
-        totalCarbon += report.carbonFootprint;
-        allAnomalies.addAll(report.anomalies);
-
-        report.applianceBreakdown.forEach((key, value) {
-          totalBreakdown[key] = (totalBreakdown[key] ?? 0.0) + value;
-        });
-
-        report.hourlyUsage.forEach((hour, value) {
-          totalHourly[hour.toString()] = (totalHourly[hour.toString()] ?? 0.0) + value;
-        });
-      }
-
-      if (!processedAny) {
-        throw Exception("No data matches the selected $scope criteria.");
-      }
-
-      await _db.collection('disaggregation_results').doc(lookupKey).set({
-        'userId': lookupKey,
-        'scope': scope,
-        'month': month,
-        'year': year,
-        if (blockId != null) 'blockId': blockId,
-        'estimated_load': totalKwh,
-        'estimated_cost': totalCost,
-        'carbon_footprint': totalCarbon,
-        'breakdown': totalBreakdown,
-        'anomalies': allAnomalies.toList(),
-        'hourlyUsage': totalHourly,
-        'summary': {
-          'totalConsumption': totalKwh,
-          'totalCost': totalCost,
-          'keyIssue': "Aggregated $scope report generated.",
-          'recommendations': ["Consolidate optimizations across $scope."],
-          'comparisonPercent': 0.0,
+      final response = await http.post(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $idToken',
         },
-        'kpis': {
-          'totalKwh': totalKwh,
-          'dailyAvgKwh': totalKwh / 30.0,
-          'peakKwh': 0.0, 
-          'peakTime': "N/A",
-          'totalCost': totalCost,
-          'changePercent': 0.0,
-        },
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      AppLog.error("Aggregation Failure", e);
-      rethrow;
+        body: jsonEncode({
+          'month': month,
+          'year': year,
+        }),
+      );
+
+      if (response.statusCode != 200) {
+        try {
+          final Map<String, dynamic> errorData = jsonDecode(response.body);
+          throw Exception(errorData['message'] ?? errorData['detail'] ?? "Server Rejection: ${response.statusCode}");
+        } catch (_) {
+          throw Exception("Aggregation API rejected payload status code: ${response.statusCode}");
+        }
+      }
+    } else {
+      throw Exception("Block-level macro-aggregation must execute via backend API. Local Dart processing is permanently disabled.");
     }
   }
 
@@ -323,16 +262,34 @@ class FirestoreRepository implements EnergyRepository {
 
   @override
   Stream<List<double>> getLiveReadingsStream(String userId) {
-    return _db
-        .collection('users')
-        .doc(userId)
-        .collection('telemetry')
-        .orderBy('timestamp', descending: true)
-        .limit(10) 
-        .snapshots()
-        .map((snapshot) => snapshot.docs
-            .map((doc) => (doc.data()['wattage'] as num).toDouble())
-            .toList());
+    // High-Level: Hardware-Centric Data Model
+    // Resolve the physical unit path from the student's profile pointer.
+    return _db.collection('users').doc(userId).snapshots().asyncExpand((userDoc) {
+      if (!userDoc.exists) return Stream.value([]);
+      
+      final data = userDoc.data()!;
+      final String? unitId = data['assignedUnitId'];
+      final String? blockId = data['dormBlockId'] ?? data['dormBlock']; // Support both name and ID mapping
+      
+      if (unitId == null) {
+        // Fallback to legacy personal path only if room assignment is missing
+        return _db.collection('users').doc(userId).collection('telemetry')
+            .orderBy('timestamp', descending: true).limit(10).snapshots().map(
+              (s) => s.docs.map((d) => (d.data()['wattage'] as num).toDouble()).toList());
+      }
+
+      // Production Hardware Node
+      Query query;
+      if (blockId != null) {
+        query = _db.collection('blocks').doc(blockId).collection('units').doc(unitId).collection('telemetry');
+      } else {
+        // Collection Group fallback for units with incomplete relational metadata
+        query = _db.collectionGroup('telemetry').where('unitId', isEqualTo: unitId);
+      }
+
+      return query.orderBy('timestamp', descending: true).limit(10).snapshots().map(
+        (s) => s.docs.map((d) => (d.data()['wattage'] as num).toDouble()).toList());
+    });
   }
 
   @override
@@ -427,7 +384,6 @@ class FirestoreRepository implements EnergyRepository {
       final currentDoc = currentSnapshot.docs.first;
       final currentData = EnergyReportData.fromFirestore(currentDoc);
 
-      // Fetch previous month for comparison
       int prevMonth = month == 1 ? 12 : month - 1;
       int prevYear = month == 1 ? year - 1 : year;
       
@@ -446,7 +402,6 @@ class FirestoreRepository implements EnergyRepository {
         }
       }
 
-      // Return a copy with the calculated comparison
       return EnergyReportData(
         id: currentData.id,
         summary: ReportSummary(
@@ -501,12 +456,12 @@ class FirestoreRepository implements EnergyRepository {
 
     final String? idToken = await user.getIdToken();
     final response = await http.post(
-      Uri.parse('$_baseUrl/api/v1/feedback'),
+      Uri.parse('$_baseUrl/api/v1/feedbacks'),
       body: jsonEncode({
-        'user_id': userId,
-        'appliance_name': applianceName,
-        'actual_state': actualState,
-        'predicted_state': predictedState,
+        'userId': userId,
+        'applianceName': applianceName,
+        'actualState': actualState,
+        'predictedState': predictedState,
         'timestamp': DateTime.now().toIso8601String(),
       }),
       headers: {

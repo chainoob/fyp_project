@@ -33,7 +33,8 @@ class VerificationScreen extends StatelessWidget {
         final uid = ownerIds[index];
         return _StudentGroupCard(
           key: ValueKey(uid), // Maintain independent state contexts per student identifier.
-          uid: uid, 
+          uid: uid,
+          unitId: "unit_${DateTime.now().month}_${DateTime.now().year}", // Dynamic unit context for telemetry generation.
           studentApps: groupedData[uid]!,
         );
       },
@@ -43,9 +44,10 @@ class VerificationScreen extends StatelessWidget {
 
 class _StudentGroupCard extends StatefulWidget {
   final String uid;
+  final String unitId; // Placeholder for dynamic unit context.
   final List<Appliance> studentApps;
 
-  const _StudentGroupCard({super.key, required this.uid, required this.studentApps});
+  const _StudentGroupCard({super.key, required this.uid, required this.unitId, required this.studentApps});
 
   @override
   State<_StudentGroupCard> createState() => _StudentGroupCardState();
@@ -75,9 +77,10 @@ class _StudentGroupCardState extends State<_StudentGroupCard> {
           if (_isExpanded) ...[
             const Divider(height: 1),
             ...widget.studentApps.map((app) => _ApplianceActionTile(
-              key: ValueKey(app.id), // Ensure stable list extraction during queue mutations.
+              key: ValueKey(app.id),
               app: app, 
               userId: widget.uid,
+              unitId: widget.unitId,
             )),
           ],
         ],
@@ -85,12 +88,12 @@ class _StudentGroupCardState extends State<_StudentGroupCard> {
     );
   }
 }
-
 class _ApplianceActionTile extends StatefulWidget {
   final Appliance app;
   final String userId;
+  final String unitId; // Dynamic unit context for telemetry generation.
 
-  const _ApplianceActionTile({super.key, required this.app, required this.userId});
+  const _ApplianceActionTile({super.key, required this.app, required this.userId, required this.unitId});
 
   @override
   State<_ApplianceActionTile> createState() => _ApplianceActionTileState();
@@ -100,37 +103,37 @@ class _ApplianceActionTileState extends State<_ApplianceActionTile> {
   bool _isProcessing = false;
 
   Future<void> _handleAction(BuildContext context, bool isApprove) async {
-    // Dispatch status update transaction to Firestore via ApplianceProvider.
-    if (_isProcessing) return;
+  if (_isProcessing) return;
 
-    setState(() => _isProcessing = true);
-    final provider = context.read<ApplianceProvider>();
+  setState(() => _isProcessing = true);
+  final provider = context.read<ApplianceProvider>();
 
-    try {
-      if (isApprove) {
-        await provider.approve(widget.userId, widget.app.id);
-      } else {
-        await provider.reject(widget.userId, widget.app.id);
-      }
+  try {
+    if (isApprove) {
+      // Execute appliance approval and trigger unit-level telemetry generation
+      await provider.approve(widget.userId, widget.app.id, widget.unitId);
+    } else {
+      await provider.reject(widget.userId, widget.app.id);
+    }
 
-      if (!mounted) return;
-      setState(() => _isProcessing = false);
+    if (!mounted) return;
+    setState(() => _isProcessing = false);
 
-      if(context.mounted){
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(isApprove ? "Device Approved" : "Application Rejected"),
-          backgroundColor: isApprove ? AppTheme.ecoTeal : Colors.red,
-          behavior: SnackBarBehavior.floating,
-        ));
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _isProcessing = false);
-      if (context.mounted){
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
-      }
+    if (context.mounted){
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(isApprove ? "Device Approved" : "Application Rejected"),
+        backgroundColor: isApprove ? AppTheme.ecoTeal : Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
+  } catch (e) {
+    if (!mounted) return;
+    setState(() => _isProcessing = false);
+    if(context.mounted){
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
     }
   }
+}
 
   @override
   Widget build(BuildContext context) {

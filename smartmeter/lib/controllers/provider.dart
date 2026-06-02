@@ -4,14 +4,9 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter/material.dart';
 import 'package:smartmeter/models/app_model.dart';
-import 'package:smartmeter/models/disaggregation_response.dart';
 import 'package:smartmeter/services/api_service.dart';
-import 'package:smartmeter/services/disaggregation_service.dart';
 import 'package:smartmeter/services/energy_repo.dart';
-import 'package:smartmeter/services/iot_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:convert';
 import 'package:smartmeter/utils/logger.dart';
 
 class AppAuthProvider extends ChangeNotifier {
@@ -254,18 +249,26 @@ class ApplianceProvider extends ChangeNotifier {
     await _repo.deleteAppliance(userId, appId);
   }
 
-  Future<void> approve(String userId, String appId) async {
-    await _repo.updateApplianceStatus(userId, appId, 'active');
-    
-    final int remainingPending = _pendingQueue
-        .where((entry) => entry.key == userId && entry.value.id != appId)
-        .length;
+  Future<void> approve(String userId, String appId, String unitId) async {
+  // Execute state mutation immediately.
+  await _repo.updateApplianceStatus(userId, appId, 'active');
 
-    if (remainingPending == 0) {
-      final now = DateTime.now();
-      await _apiService.seedSyntheticReddData(userId, month: now.month, year: now.year);
-    }
+  final int remainingPending = _pendingQueue
+      .where((entry) => entry.key == userId && entry.value.id != appId)
+      .length;
+
+  if (remainingPending == 0) {
+    final now = DateTime.now();
+    
+    _apiService.seedSyntheticReddData(
+      unitId, 
+      month: now.month, 
+      year: now.year
+    ).catchError((error) {
+      debugPrint("Telemetry generation background task failed: $error");
+    });
   }
+}
 
   Future<void> reject(String userId, String appId) async =>
       await _repo.updateApplianceStatus(userId, appId, 'rejected');
@@ -390,87 +393,12 @@ class ReportProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // 1. Fetch raw underlying unit results directly from the ML output collection
-      final snapshot = await FirebaseFirestore.instance
-          .collection('disaggregation_results')
-          .where('month', isEqualTo: month)
-          .where('year', isEqualTo: year)
-          .get();
-
-      if (snapshot.docs.isEmpty) {
-        throw Exception("No unit data found to compile. Staff must submit bills first.");
-      }
-
-      Map<String, double> aggBreakdown = {};
-      double aggCarbon = 0.0;
-      double aggCost = 0.0;
-      double aggConsumption = 0.0; 
-      Set<String> aggAnomalies = {};
-      Map<String, double> aggHourly = {}; 
-
-      bool processedAny = false;
-
-      // 2. Loop through and mathematically fold the data together
-      for (var doc in snapshot.docs) {
-        final rawData = doc.data();
-        
-        // Skip already aggregated documents to avoid double-counting
-        if (doc.id == 'aggregate' || rawData['userId'] == 'aggregate' || rawData['userId'] == blockId) continue;
-
-        // Ensure Block level aggregation only calculates units inside that specific block
-        if (scope.contains('Block') && rawData['blockId'] != blockId) continue;
-        
-        processedAny = true;
-        final data = EnergyReportData.fromFirestore(doc);
-        
-        aggCarbon += data.carbonFootprint;
-        aggCost += data.summary.totalCost;
-        aggConsumption += data.summary.totalConsumption; 
-        aggAnomalies.addAll(data.anomalies);
-        
-        data.applianceBreakdown.forEach((key, val) {
-          aggBreakdown[key] = (aggBreakdown[key] ?? 0.0) + val;
-        });
-
-        data.hourlyUsage.forEach((hour, val) {
-          aggHourly[hour.toString()] = (aggHourly[hour.toString()] ?? 0.0) + val;
-        });
-      }
-
-      if (!processedAny) {
-         throw Exception("No data matches the selected $scope criteria.");
-      }
-
-      final String lookupKey = (scope == 'Campus') ? 'aggregate' : blockId!;
-
-      // 3. Commit the compiled master report to the main results collection
-      await FirebaseFirestore.instance.collection('disaggregation_results').doc(lookupKey).set({
-        'userId': lookupKey,
-        'scope': scope,
-        'month': month,
-        'year': year,
-        if (blockId != null) 'blockId': blockId,
-        'carbonFootprint': aggCarbon,
-        'breakdown': aggBreakdown,
-        'anomalies': aggAnomalies.toList(),
-        'hourlyUsage': aggHourly,
-        'summary': {
-          'totalConsumption': aggConsumption,
-          'comparisonPercent': 0.0,
-          'totalCost': aggCost,
-          'keyIssue': aggAnomalies.isNotEmpty 
-              ? "Critical: Anomalies detected across ${aggAnomalies.length} profiles." 
-              : "Consumption nominal across all units.",
-          'recommendations': ["Review high-load units identified in breakdown."]
-        },
-        'kpis': {
-          'totalKwh': aggConsumption,
-          'dailyAvgKwh': aggConsumption / 30,
-          'totalCost': aggCost,
-        },
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
+      await _repo.triggerAggregation(
+        scope: scope,
+        month: month,
+        year: year,
+        blockId: blockId,
+      );
     } catch (e) {
       rethrow;
     } finally {
@@ -530,231 +458,24 @@ class ReportProvider extends ChangeNotifier {
 
 class EnergyProvider extends ChangeNotifier {
   final EnergyRepository _repository;
-  final DisaggregationService _mlService = DisaggregationService();
 
   EnergyReportData? currentReport;
-  DisaggregationResponse? currentMlReport;
   
-  final List<double> _liveReadings = [];
-  IoTTelemetrySource? _iotSource;
-  StreamSubscription? _telemetrySub;
-  StreamSubscription? _statusSub;
   StreamSubscription? _asyncPipelineSub; 
 
   bool isLoading = true;
   bool isProcessingAI = false;
-  bool isProcessingML = false;
-  bool isConnected = false;
   String? errorMessage;
 
   Map<String, double?> manualOverrides = {};
 
-  String? _telemetryUserId;
-  String? _targetReportId;
-
   EnergyProvider(this._repository);
 
-  List<double> get liveReadings => _liveReadings;
-  Map<String, double> get applianceBreakdown => currentMlReport?.data.breakdown ?? {};
+  Map<String, double> get applianceBreakdown => currentReport?.applianceBreakdown ?? {};
 
   void updateManualOverride(String applianceName, bool isOn) {
     manualOverrides[applianceName] = isOn ? 1.0 : 0.0;
     notifyListeners();
-    if (_liveReadings.length >= 3) {
-      fetchRealTimeDisaggregation(aggregateReadings: _liveReadings);
-    }
-  }
-
-  void subscribeToTelemetry(String userId, {String? targetReportId}) {
-    _telemetryUserId = userId;
-    _targetReportId = targetReportId;
-    
-    _telemetrySub?.cancel();
-    _statusSub?.cancel();
-    _iotSource?.dispose();
-
-    _iotSource = FirebaseTelemetrySource(
-      userId, 
-      _repository.getLiveReadingsStream(userId)
-    );
-
-    _statusSub = _iotSource!.connectionStatus.listen((status) {
-      isConnected = status;
-      notifyListeners();
-    });
-
-    _telemetrySub = _iotSource!.wattageStream.listen((wattage) {
-      if (_liveReadings.length >= 10) _liveReadings.removeAt(0);
-      _liveReadings.add(wattage);
-      notifyListeners();
-      
-      if (_liveReadings.length >= 4) {
-        fetchRealTimeDisaggregation(aggregateReadings: _liveReadings);
-      }
-    });
-  }
-
-  Future<EnergyReportData> _aggregateCampusData(int month, int year) async {
-    // Check if a pre-compiled aggregate report exists first
-    try {
-      final String docId = "aggregate_${month}_$year";
-      final existingAgg = await FirebaseFirestore.instance
-          .collection('disaggregation_results')
-          .doc(docId)
-          .get();
-      
-      if (existingAgg.exists) {
-        return EnergyReportData.fromFirestore(existingAgg);
-      }
-    } catch (_) {}
-
-    final snapshot = await FirebaseFirestore.instance
-        .collection('disaggregation_results')
-        .where('userId', isEqualTo: 'aggregate')
-        .where('month', isEqualTo: month)
-        .where('year', isEqualTo: year)
-        .get();
-
-    if (snapshot.docs.isNotEmpty) {
-      return EnergyReportData.fromFirestore(snapshot.docs.first);
-    }
-
-    // Manual fall-through aggregation if no pre-compiled doc is found
-    final allReports = await FirebaseFirestore.instance
-        .collection('disaggregation_results')
-        .where('month', isEqualTo: month)
-        .where('year', isEqualTo: year)
-        .get();
-
-    if (allReports.docs.isEmpty) {
-      throw Exception("Analysis data unavailable for aggregate ($month/$year). Awaiting staff bill submission.");
-    }
-
-    Map<String, double> aggBreakdown = {};
-    double aggCarbon = 0.0;
-    double aggCost = 0.0;
-    double aggConsumption = 0.0; 
-    Set<String> aggAnomalies = {};
-    Map<int, double> aggHourly = {};
-
-    for (var doc in allReports.docs) {
-      final data = doc.data();
-      // Skip already aggregated documents to avoid double-counting
-      if (doc.id.contains('aggregate') || data['userId'] == 'aggregate') continue;
-      
-      final report = EnergyReportData.fromFirestore(doc);
-      
-      aggCarbon += report.carbonFootprint;
-      aggCost += report.summary.totalCost;
-      aggConsumption += report.summary.totalConsumption; 
-      aggAnomalies.addAll(report.anomalies);
-      
-      report.applianceBreakdown.forEach((key, val) {
-        aggBreakdown[key] = (aggBreakdown[key] ?? 0.0) + val;
-      });
-
-      report.hourlyUsage.forEach((hour, val) {
-        aggHourly[hour] = (aggHourly[hour] ?? 0.0) + val;
-      });
-    }
-
-    return EnergyReportData(
-      id: 'aggregate',
-      summary: ReportSummary(
-        totalConsumption: aggConsumption,
-        comparisonPercent: 0.0, 
-        totalCost: aggCost,
-        keyIssue: aggAnomalies.isNotEmpty 
-            ? "Critical: Anomalies detected across ${aggAnomalies.length} profiles." 
-            : "Campus consumption nominal.",
-        recommendations: [], 
-      ),
-      kpis: ReportKPIs(
-        totalKwh: aggConsumption,
-        dailyAvgKwh: aggConsumption / 30,
-        peakKwh: 0.0,
-        peakTime: "N/A",
-        totalCost: aggCost,
-        changePercent: 0.0,
-      ),
-      carbonFootprint: aggCarbon,
-      usageTrend: [],
-      applianceBreakdown: aggBreakdown,
-      benchmarkBreakdown: {}, 
-      anomalies: aggAnomalies.toList(),
-      hourlyUsage: aggHourly,
-      costBreakdown: {},
-    );
-  }
-
-  void subscribeToReport({
-    required String scope,
-    required int month,
-    required int year,
-    String? unitId,
-    String? blockId,
-  }) {
-    _asyncPipelineSub?.cancel();
-    
-    final String lookupKey = unitId ?? blockId ?? 'aggregate';
-
-    _asyncPipelineSub = FirebaseFirestore.instance
-        .collection('disaggregation_results')
-        .where('userId', isEqualTo: lookupKey)
-        .where('month', isEqualTo: month)
-        .where('year', isEqualTo: year)
-        .snapshots()
-        .listen((snapshot) {
-          if (snapshot.docs.isNotEmpty) {
-            try {
-              currentReport = EnergyReportData.fromFirestore(snapshot.docs.first);
-              isLoading = false;
-              errorMessage = null;
-              notifyListeners();
-            } catch (e, stack) {
-              errorMessage = "Data mapping error: $e";
-              isLoading = false;
-              currentReport = null;
-              AppLog.error("FATAL PARSE ERROR", e, stack);
-              notifyListeners();
-            }
-          } else {
-            if (scope.toLowerCase().contains('campus') || (scope.toLowerCase().contains('block') && unitId == null)) {
-               loadReport(scope: scope, month: month, year: year, blockId: blockId, unitId: unitId);
-            } else {
-              // Retrieve transient real-time fallback data
-              FirebaseFirestore.instance.collection('realtime_results')
-                  .doc(lookupKey)
-                  .get()
-                  .then((doc) {
-                    try {
-                      if (doc.exists) {
-                        currentReport = EnergyReportData.fromFirestore(doc);
-                        errorMessage = null;
-                      } else {
-                        currentReport = null;
-                      }
-                    } catch (e, stack) {
-                      errorMessage = "Fallback mapping error: $e";
-                      currentReport = null;
-                      AppLog.error("FATAL PARSE ERROR", e, stack);
-                    }
-                    isLoading = false;
-                    notifyListeners();
-                  }).catchError((e) {
-                    errorMessage = "Fallback retrieval error: $e";
-                    currentReport = null;
-                    isLoading = false;
-                    notifyListeners();
-                  });
-            }
-          }
-        }, onError: (e) {
-          errorMessage = "Stream rejected: $e";
-          isLoading = false;
-          AppLog.error("FIRESTORE ERROR", e, null);
-          notifyListeners();
-        });
   }
 
   Future<void> loadReport({
@@ -769,28 +490,19 @@ class EnergyProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      if (scope.toLowerCase().contains('campus')) {
-        currentReport = await _aggregateCampusData(month, year);
-      } else if (scope.toLowerCase().contains('block') && unitId == null) {
-        currentReport = await _repository.fetchEnergyReport(
-          scope: scope,
-          month: month,
-          year: year,
-          blockId: blockId,
-        );
-      } else {
-        currentReport = await _repository.fetchEnergyReport(
-          scope: scope,
-          month: month,
-          year: year,
-          blockId: blockId,
-          unitId: unitId,
-        );
-      }
+      currentReport = await _repository.fetchEnergyReport(
+        scope: scope,
+        month: month,
+        year: year,
+        blockId: blockId,
+        unitId: unitId,
+      );
     } catch (e) {
-      // Don't set error if we're just waiting for data in a unit scope
-      if (!scope.toLowerCase().contains('unit')) {
-        errorMessage = e.toString();
+      final errorStr = e.toString();
+      if (errorStr.contains("Analysis data unavailable") || errorStr.contains("Awaiting staff bill submission")) {
+        errorMessage = null;
+      } else {
+        errorMessage = errorStr;
       }
       currentReport = null;
     } finally { 
@@ -800,7 +512,7 @@ class EnergyProvider extends ChangeNotifier {
   }
 
   Future<void> runDisaggregation(
-    String userId, 
+    String providedId, 
     String billId, 
     double totalBill, {
     required String scope,
@@ -814,8 +526,8 @@ class EnergyProvider extends ChangeNotifier {
 
     try {
       final context = {
-        'userId': userId,
-        'telemetrySourceId': telemetrySourceId ?? userId, 
+        'userId': providedId,
+        'telemetrySourceId': telemetrySourceId ?? providedId, 
         'totalBill': totalBill,
         'month': month, 
         'year': year,  
@@ -823,84 +535,25 @@ class EnergyProvider extends ChangeNotifier {
         'trainModel': false, 
       };
 
-      _asyncPipelineSub?.cancel();
+      _asyncPipelineSub?.cancel(); 
+
+      await _repository.triggerDisaggregation(providedId, context);
       
-      _asyncPipelineSub = FirebaseFirestore.instance
-          .collection('disaggregation_results')
-          .where('userId', isEqualTo: userId)
-          .where('month', isEqualTo: month)
-          .where('year', isEqualTo: year)
-          .snapshots()
-          .listen((snapshot) async {
-            if (snapshot.docs.isNotEmpty) {
-              _asyncPipelineSub?.cancel(); 
-              
-              await loadReport(
-                scope: scope,
-                month: month,
-                year: year,
-                unitId: userId,
-              );
-              
-              isProcessingAI = false;
-              notifyListeners();
-            }
-          }, onError: (error) {
-            isProcessingAI = false;
-            errorMessage = "Data pipeline synchronization dropped.";
-            notifyListeners();
-          });
-
-      await _repository.triggerDisaggregation(userId, context);
+      await Future.delayed(const Duration(milliseconds: 1500));
       
-    } catch (e, stack) {
-      _asyncPipelineSub?.cancel();
-      isProcessingAI = false;
-      errorMessage = e.toString();
-      AppLog.error("Disaggregation Trigger Error", e, stack);
-      notifyListeners();
-      rethrow;
-    }
-  }
-
-  Future<void> fetchRealTimeDisaggregation({
-    required List<double> aggregateReadings,
-  }) async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    final String effectiveId = _targetReportId ?? user.uid;
-    final String cacheKey = "ml_cache_${effectiveId}_${DateTime.now().hour}";
-    final prefs = await SharedPreferences.getInstance();
-
-    final String? cachedData = prefs.getString(cacheKey);
-    if (cachedData != null && manualOverrides.isEmpty) {
-      currentMlReport = DisaggregationResponse.fromJson(jsonDecode(cachedData));
-      notifyListeners();
-      return;
-    }
-
-    isProcessingML = true;
-    errorMessage = null;
-    notifyListeners();
-
-    try {
-      final response = await _mlService.fetchDisaggregation(
-        targetId: _targetReportId,
-        aggregateReadings: aggregateReadings,
-        manualOverrides: manualOverrides,
+      await loadReport(
+        scope: scope,
+        month: month,
+        year: year,
+        unitId: providedId,
       );
       
-      currentMlReport = response;
-      if (manualOverrides.isEmpty) {
-        await prefs.setString(cacheKey, jsonEncode(response.toJson()));
-      }
     } catch (e, stack) {
-      errorMessage = "Real-time disaggregation tracking failed.";
-      AppLog.error("ML Cloud Run Pipeline Fetch Failure", e, stack);
-      currentMlReport = null;
+      errorMessage = e.toString();
+      AppLog.error("Disaggregation Trigger Error", e, stack);
+      rethrow;
     } finally {
-      isProcessingML = false;
+      isProcessingAI = false;
       notifyListeners();
     }
   }
@@ -926,7 +579,6 @@ class EnergyProvider extends ChangeNotifier {
 
   @override
   void dispose() {
-    _telemetrySub?.cancel();
     _asyncPipelineSub?.cancel();
     super.dispose();
   }

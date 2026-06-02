@@ -1,5 +1,3 @@
-// smartmeter/lib/screens/staffs/staff_shell.dart
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:smartmeter/controllers/provider.dart';
@@ -33,11 +31,10 @@ class _StaffShellState extends State<StaffShell> {
       
       context.read<ApplianceProvider>().subscribeToQueue();
       context.read<GoalProvider>().subscribeToCampus();
-      context.read<EnergyProvider>().subscribeToTelemetry('campus');
       
-      // DEFECT REMOVED: Instantiated the Campus Report fetch on layout initialization
+      // Hardware telemetry disabled. Route strictly to batch report fetch.
       context.read<EnergyProvider>().loadReport(
-        scope: 'Campus Level',
+        scope: 'Campus',
         month: now.month,
         year: now.year,
       );
@@ -107,7 +104,6 @@ class _StaffDashboardState extends State<StaffDashboard> {
   final Color _cardDark = const Color(0xFF1E1E1E);
   final Color _textPrimary = Colors.white;
 
-  // DEFECT REMOVED: Injected interactive goal controller to map staff input to Firestore
   void _showEditGoalDialog(BuildContext context, GoalProvider goalProvider) {
     final TextEditingController controller = TextEditingController(
       text: goalProvider.target > 0 ? goalProvider.target.toStringAsFixed(0) : "5000"
@@ -158,11 +154,6 @@ class _StaffDashboardState extends State<StaffDashboard> {
     final goalProvider = context.watch<GoalProvider>();
     final report = energyProvider.currentReport;
     
-    final List<double> aggregateReadings = energyProvider.liveReadings;
-    final bool isLive = energyProvider.isConnected && aggregateReadings.isNotEmpty;
-    final double campusLoadKw = isLive ? aggregateReadings.last / 1000.0 : 0.0;
-
-    // DEFECT REMOVED: Mathematical aggregation restores the current total bypass
     final double totalUsageKwh = report != null 
         ? report.applianceBreakdown.values.fold(0.0, (sum, value) => sum + value) 
         : 0.0;
@@ -171,7 +162,9 @@ class _StaffDashboardState extends State<StaffDashboard> {
     final double safePercentage = targetGoalKwh > 0 ? (totalUsageKwh / targetGoalKwh).clamp(0.0, 1.0) : 0.0;
 
     final Map<String, double> breakdown = energyProvider.applianceBreakdown;
-    final List<String> anomalies = energyProvider.currentMlReport?.data.anomalies ?? [];
+    
+    // STRUCTURAL FIX: Anomalies now read strictly from the static batch report
+    final List<String> anomalies = report?.anomalies ?? [];
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -198,35 +191,44 @@ class _StaffDashboardState extends State<StaffDashboard> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text("Real-Time Campus Load", style: TextStyle(color: Colors.white70)),
+                  const Text("Monthly Campus Load", style: TextStyle(color: Colors.white70)),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                        color: isLive ? Colors.greenAccent.withValues(alpha: 0.2) : Colors.grey.withValues(alpha: 0.2),
+                        color: Colors.blueAccent.withValues(alpha: 0.2),
                         borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: isLive ? Colors.greenAccent.withValues(alpha: 0.5) : Colors.grey)),
-                    child: Row(
+                        border: Border.all(color: Colors.blueAccent.withValues(alpha: 0.5))),
+                    child: const Row(
                       children: [
-                        Icon(Icons.circle, size: 8, color: isLive ? Colors.greenAccent : Colors.grey),
-                        const SizedBox(width: 6),
-                        Text(isLive ? "IoT ONLINE" : "OFFLINE",
-                            style: TextStyle(color: isLive ? Colors.greenAccent : Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
+                        Icon(Icons.memory, size: 10, color: Colors.blueAccent),
+                        SizedBox(width: 6),
+                        Text("BATCH AI",
+                            style: TextStyle(color: Colors.blueAccent, fontSize: 10, fontWeight: FontWeight.bold)),
                       ],
                     ),
                   )
                 ],
               ),
               const SizedBox(height: 12),
-              Text("${campusLoadKw.toStringAsFixed(2)} kW",
+              Text("${totalUsageKwh.toStringAsFixed(1)} kWh",
                   style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Colors.white)),
               const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Icon(Icons.history, color: Colors.white54, size: 16),
-                  const SizedBox(width: 4),
-                  Text("Total Accumulated: ${totalUsageKwh.toStringAsFixed(1)} kWh", style: const TextStyle(color: Colors.white70, fontSize: 13)),
-                ],
-              ),
+              if (energyProvider.isLoading)
+                 const Row(
+                  children: [
+                    SizedBox(width: 12, height: 12, child: CircularProgressIndicator(color: Colors.white54, strokeWidth: 2)),
+                    SizedBox(width: 8),
+                    Text("Fetching analysis...", style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  ],
+                )
+              else 
+                Row(
+                  children: [
+                    const Icon(Icons.check_circle_outline, color: Colors.white54, size: 16),
+                    const SizedBox(width: 4),
+                    Text(report != null ? "Data synchronized" : "Awaiting batch submission", style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                  ],
+                ),
             ],
           ),
         ),

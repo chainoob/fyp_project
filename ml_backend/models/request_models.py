@@ -1,20 +1,25 @@
-# ml_backend/models/request_models.py
-
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 
 class OptimizationRequest(BaseModel):
-    user_id: str
-    actual_bill: float
+    user_id: str = Field(..., alias="userId")
+    actual_bill: float = Field(..., alias="actualBill")
+    
+    class Config:
+        populate_by_name = True
 
 class SyncRequest(BaseModel):
-    user_id: str
+    user_id: str = Field(..., alias="userId")
     context: Dict[str, Any]
+    
+    class Config:
+        populate_by_name = True
 
 class DisaggregationRequest(BaseModel):
     user_id: str = Field(..., alias="userId")
     aggregate_readings: List[float] = Field(..., alias="aggregateReadings", min_length=1)
-    device_states: Dict[str, Optional[float]] = Field(default_factory=dict, alias="deviceStates")
+    device_states: Dict[str, Optional[float]] = Field(default_factory=dict, alias="networkStates")
+    manual_overrides: Dict[str, Optional[float]] = Field(default_factory=dict, alias="manualOverrides")
 
     class Config:
         populate_by_name = True
@@ -33,16 +38,22 @@ class BatchDisaggregationRequest(BaseModel):
         populate_by_name = True
     
 class FeedbackRequest(BaseModel):
-    user_id: str
-    appliance_name: str
-    timestamp: str  
-    actual_state: bool  
-    predicted_state: bool
+    user_id: str = Field(..., alias="userId")
+    appliance_name: str = Field(..., alias="applianceName")
+    timestamp: Optional[str] = None
+    actual_state: bool = Field(..., alias="actualState")
+    predicted_state: bool = Field(..., alias="predictedState")
+    
+    class Config:
+        populate_by_name = True
 
 class SeedReddRequest(BaseModel):
-    user_id: str
+    user_id: str = Field(..., alias="userId")
     month: int
     year: int
+    
+    class Config:
+        populate_by_name = True
 
 class AggregationRequest(BaseModel):
     month: int

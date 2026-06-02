@@ -1,5 +1,3 @@
-// smartmeter/lib/screens/students/analytics_screen.dart
-
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -27,6 +25,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   @override
   void initState() {
     super.initState();
+    final now = DateTime.now();
+    _selectedDate = DateTime(now.year, now.month, 1);
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _fetchHistoricalData();
     });
@@ -35,14 +36,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   void _fetchHistoricalData() {
     final user = context.read<AppAuthProvider>().currentUser;
     if (user != null) {
-      // High-Level: Use reactive stream subscription to auto-update when report is generated.
-      final String reportTargetId = user.assignedUnitId ?? user.uid;
-
-      context.read<EnergyProvider>().subscribeToReport(
-        scope: user.assignedUnitId != null ? 'Unit' : 'Personal',
+      context.read<EnergyProvider>().loadReport(
+        scope: 'Personal',
         month: _selectedDate.month,
         year: _selectedDate.year,
-        unitId: reportTargetId,
+        unitId: user.uid,
       );
     }
   }
@@ -103,16 +101,15 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     }
 
     final staticReport = provider.currentReport;
-    final realTimeReport = provider.currentMlReport?.data;
 
-    if (staticReport == null && realTimeReport == null) {
+    if (staticReport == null) {
       return Column(
         children: [
           _buildMonthSelector(),
           const Expanded(
             child: Center(
               child: Text(
-                "No analysis data available for this month.\nAwaiting telemetry resolution.",
+                "No analysis data available for this month.\nAwaiting staff batch submission.",
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.white54),
               ),
@@ -123,30 +120,12 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     }
 
     final List<Appliance> appliances = applianceProvider.appliances;
-    appliances.map((a) => a.type).toList();
 
-    final bool isCurrentMonth = _selectedDate.month == DateTime.now().month && 
-                               _selectedDate.year == DateTime.now().year;
-
-    // High-Level: Prioritize high-fidelity historical reports (from bill submission).
-    // Fallback to real-time telemetry only for the current month if no historical report exists.
-    final Map<String, dynamic> rawBreakdown = (staticReport != null)
-        ? staticReport.applianceBreakdown 
-        : (isCurrentMonth && realTimeReport != null) ? realTimeReport.breakdown : {};
-
-    Map<int, double> rawHourly = {};
-    if (staticReport != null && staticReport.hourlyUsage.isNotEmpty) {
-      rawHourly = staticReport.hourlyUsage;
-    } else if (isCurrentMonth && realTimeReport != null && realTimeReport.hourlyUsage.isNotEmpty) {
-      rawHourly = realTimeReport.hourlyUsage;
-    }
-
-    final List<String> anomalies = (staticReport != null)
-        ? staticReport.anomalies
-        : (isCurrentMonth && realTimeReport != null) ? realTimeReport.anomalies : [];
-
-    final Map<String, double> benchmarkBreakdown = staticReport?.benchmarkBreakdown ?? {};
-    final String keyIssue = staticReport?.summary.keyIssue ?? "Consumption within typical parameters.";
+    final Map<String, dynamic> rawBreakdown = staticReport.applianceBreakdown;
+    final Map<int, double> rawHourly = staticReport.hourlyUsage;
+    final List<String> anomalies = staticReport.anomalies;
+    final Map<String, double> benchmarkBreakdown = staticReport.benchmarkBreakdown;
+    final String keyIssue = staticReport.summary.keyIssue;
 
     final Map<String, double> sanitizedBreakdown = {};
     double unregisteredLoad = 0.0;
@@ -557,7 +536,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     List<FlSpot> spots = [];
     double maxY = 0;
 
-    // Convert Map values back into Cartesian coordinates for the chart
     hourlyData.forEach((hour, value) {
       spots.add(FlSpot(hour.toDouble(), value));
       if (value > maxY) maxY = value;

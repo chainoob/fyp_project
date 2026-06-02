@@ -2,27 +2,29 @@ import base64
 import datetime
 import json
 import os
+import asyncio
+
 import firebase_admin
-from firebase_admin import credentials, firestore, messaging
+from firebase_admin import credentials, messaging
+from google.cloud import firestore as gcp_firestore
+from google.cloud.firestore import AsyncClient
+from google.oauth2 import service_account
+import google.auth
+
 from utils.logger import AppLog
 from utils.secrets import get_secret
 
 class FirebaseClient:
-    # High-level: Centralized Firestore client with Cloud Run and local credential support.
+    # High-level: Centralized Firestore Async client with Cloud Run and local credential support.
 
     def __init__(self):
-        # High-level: Initialize the Firestore SDK and establish the database client.
         self.credential_source = "uninitialized"
         self._setup_credentials()
-        self.db = firestore.client()
+        # Execution: Initialize native AsyncClient for non-blocking I/O
+        self.db = AsyncClient(credentials=self.gcp_creds)
 
     def _setup_credentials(self):
-        # High-level: Configures SDK using Secret Manager, ADC, or local JSON fallback.
-        if firebase_admin._apps:
-            # Developer Expectation: Prevent re-initialization if the app context is already active.
-            return
-
-        #Google Cloud Secret Manager
+        # Configures Firebase Admin SDK (for FCM) and Google Auth (for Async Firestore)
         sa_json, source = get_secret("FIREBASE_SERVICE_ACCOUNT")
         if sa_json:
             try:
@@ -32,7 +34,14 @@ class FirebaseClient:
                     decoded_bytes = base64.b64decode(sa_json)
                     cert_dict = json.loads(decoded_bytes)
                 
-                cred = credentials.Certificate(cert_dict)
+                # Setup Firebase Admin for Cloud Messaging
+                if not firebase_admin._apps:
+                    cred = credentials.Certificate(cert_dict)
+                    firebase_admin.initialize_app(cred)
+
+                # Setup native GCP Credentials for AsyncClient
+                self.gcp_creds = service_account.Credentials.from_service_account_info(cert_dict)
+                
                 self.credential_source = "secret_manager"
                 AppLog.info("FIREBASE_INIT", "Credentials initialized via Secret Manager.")
             except Exception as e:
@@ -41,14 +50,22 @@ class FirebaseClient:
         else:
             try:
                 # Production Path 2: Application Default Credentials (ADC)
-                cred = credentials.ApplicationDefault()
+                if not firebase_admin._apps:
+                    cred = credentials.ApplicationDefault()
+                    firebase_admin.initialize_app(cred)
+
+                self.gcp_creds, _ = google.auth.default()
                 self.credential_source = "adc"
                 AppLog.info("FIREBASE_INIT", "Using Application Default Credentials (ADC).")
             except Exception:
                 # Development Path: Local JSON Fallback (DEBUG mode only)
                 if os.environ.get("DEBUG", "false").lower() == "true":
                     try:
-                        cred = credentials.Certificate("serviceAccountKey.json")
+                        if not firebase_admin._apps:
+                            cred = credentials.Certificate("serviceAccountKey.json")
+                            firebase_admin.initialize_app(cred)
+
+                        self.gcp_creds = service_account.Credentials.from_service_account_file("serviceAccountKey.json")
                         self.credential_source = "local_file"
                         AppLog.info("FIREBASE_INIT", "Falling back to local serviceAccountKey.json.")
                     except Exception as e:
@@ -58,25 +75,24 @@ class FirebaseClient:
                     AppLog.error("FIREBASE_INIT", "No valid credentials found. Deployment likely misconfigured.")
                     raise RuntimeError("No valid Firebase credentials found.")
 
-        firebase_admin.initialize_app(cred)
-
-    def get_user_appliances(self, user_id: str):
-        # High-level: Stream active appliance documents with explicit gRPC error interception.
+    async def get_user_appliances(self, user_id: str):
         try:
             AppLog.info("FIRESTORE_READ", f"Fetching active appliances for user: {user_id}")
+            # Note: FieldFilter is the correct syntax for async streaming queries
             docs = self.db.collection('users').document(user_id).collection('appliances') \
-                .where('status', '==', 'active').stream()
+                .where(filter=gcp_firestore.FieldFilter('status', '==', 'active')).stream()
             
-            result = {doc.id: doc.to_dict() for doc in docs}
+            result = {}
+            async for doc in docs:
+                result[doc.id] = doc.to_dict()
+                
             AppLog.info("FIRESTORE_READ", f"Retrieved {len(result)} active appliances.")
             return result
         except Exception as e:
-            # Developer Expectation: Log full trace context for permission or connectivity failures.
             AppLog.error("FIRESTORE_READ", f"Read failure for user {user_id}: {str(e)}")
             raise e
 
-    def update_appliance_weights(self, user_id: str, appliances: dict, new_weights: list):
-        # High-level: Executes atomic batch update of appliance probability weights.
+    async def update_appliance_weights(self, user_id: str, appliances: dict, new_weights: list):
         try:
             batch = self.db.batch()
             for i, (app_id, _) in enumerate(appliances.items()):
@@ -86,14 +102,13 @@ class FirebaseClient:
                     "prob_day": float(new_weights[i]),
                     "prob_night": float(new_weights[i])
                 })
-            batch.commit()
+            await batch.commit()
             AppLog.info("FIRESTORE_BATCH", f"Weights updated for {len(appliances)} appliances.")
         except Exception as e:
             AppLog.error("FIRESTORE_BATCH", f"Batch update failed: {str(e)}")
             raise e
 
     def _clean_numpy(self, data):
-        # High-level: Recursively converts NumPy types to native Python types for Firestore serialization.
         if isinstance(data, dict):
             return {k: self._clean_numpy(v) for k, v in data.items()}
         elif isinstance(data, list):
@@ -102,82 +117,69 @@ class FirebaseClient:
             return data.item() if hasattr(data, 'item') else float(data)
         return data
 
-    def save_disaggregation_result(self, payload: dict):
-        # High-level: Persists disaggregation model output with deterministic IDs to prevent duplication.
+    async def save_disaggregation_result(self, payload: dict):
         try:
             user_id = payload.get('userId')
             month = payload.get('month')
             year = payload.get('year')
             
             AppLog.info("FIRESTORE_SAVE", f"Attempting to save result for {user_id} ({month}/{year})")
-            
-            # Developer Expectation: Deep-clean the payload to prevent gRPC serialization errors.
             cleaned_payload = self._clean_numpy(payload)
-            
-            # Use deterministic ID for idempotency: userId_month_year
             doc_id = f"{user_id}_{month}_{year}"
             
-            # Explicitly ensure timestamp is a native DateTime or SERVER_TIMESTAMP
             if 'timestamp' in cleaned_payload and not isinstance(cleaned_payload['timestamp'], (datetime.datetime, str)):
-                cleaned_payload['timestamp'] = firestore.SERVER_TIMESTAMP
+                cleaned_payload['timestamp'] = gcp_firestore.SERVER_TIMESTAMP
 
-            self.db.collection('disaggregation_results').document(doc_id).set(cleaned_payload)
+            await self.db.collection('disaggregation_results').document(doc_id).set(cleaned_payload)
             AppLog.info("FIRESTORE_SAVE", f"SUCCESS: Result persisted with deterministic ID: {doc_id}")
         except Exception as e:
             AppLog.error("FIRESTORE_SAVE", f"CRITICAL PERSISTENCE FAILURE: {str(e)}")
             raise e
 
-    def save_realtime_result(self, payload: dict):
-        # High-level: Persists transient real-time windows to a separate collection to prevent report corruption.
+    async def save_realtime_result(self, payload: dict):
         try:
             user_id = payload.get('userId')
             cleaned_payload = self._clean_numpy(payload)
             
-            # Real-time results are transient; we use the userId as document ID to keep only the latest window.
-            self.db.collection('realtime_results').document(user_id).set(cleaned_payload)
+            await self.db.collection('realtime_results').document(user_id).set(cleaned_payload)
             AppLog.info("FIRESTORE_REALTIME", f"Real-time result cached for user: {user_id}")
         except Exception as e:
             AppLog.error("FIRESTORE_REALTIME", f"Real-time persistence failure: {str(e)}")
 
-    def save_daily_usage(self, user_id: str, hourly_profile: dict):
-        # High-level: Stores daily time-series breakdown for UI visualization.
+    async def save_daily_usage(self, user_id: str, hourly_profile: dict):
         try:
             date_str = datetime.date.today().isoformat()
             doc_ref = self.db.collection('users').document(user_id) \
                 .collection('daily_usage').document(date_str)
             
-            # Developer Expectation: Use SERVER_TIMESTAMP to maintain consistency across global locations.
-            doc_ref.set({
+            await doc_ref.set({
                 "kwh": sum(hourly_profile.values()),
                 "hourly_breakdown": hourly_profile,
-                "timestamp": firestore.SERVER_TIMESTAMP
+                "timestamp": gcp_firestore.SERVER_TIMESTAMP
             })
             AppLog.info("FIRESTORE_DAILY", f"Daily usage synced for {user_id} on {date_str}")
         except Exception as e:
             AppLog.error("FIRESTORE_DAILY", f"Daily sync failed: {str(e)}")
             raise e
 
-    def log_feedback(self, data: dict):
-        # High-level: Archives user-submitted ground truth for future model retraining.
+    async def log_feedback(self, data: dict):
         try:
             feedback_ref = self.db.collection('users').document(data['user_id']).collection('feedback')
-            feedback_ref.add({
+            await feedback_ref.add({
                 "appliance": data['appliance_name'],
                 "was_correct": data['actual_state'] == data['predicted_state'],
                 "actual_state": data['actual_state'],
                 "timestamp": data['timestamp'],
-                "logged_at": firestore.SERVER_TIMESTAMP
+                "logged_at": gcp_firestore.SERVER_TIMESTAMP
             })
             AppLog.info("FIRESTORE_FEEDBACK", f"Feedback logged for appliance: {data['appliance_name']}")
         except Exception as e:
             AppLog.error("FIRESTORE_FEEDBACK", f"Feedback logging failed: {str(e)}")
 
-    def update_single_appliance_prob(self, user_id: str, app_name: str, new_prob: float):
-        # High-level: Updates weight parameters for a single specific appliance.
+    async def update_single_appliance_prob(self, user_id: str, app_name: str, new_prob: float):
         try:
-            app_ref = self.db.collection('users').document(user_id) \
-                .collection('appliances').document(app_name)
-            app_ref.update({
+            app_ref = self.db.collection('users').document(user_id).collection('appliances').document(app_name)
+            await app_ref.update({
                 "prob_day": new_prob,
                 "prob_night": new_prob
             })
@@ -185,45 +187,56 @@ class FirebaseClient:
         except Exception as e:
             AppLog.error("FIRESTORE_UPDATE", f"Single update failed for {app_name}: {str(e)}")
 
-    def update_appliance_signature_meta(self, user_id: str, app_name: str, meta: dict):
-        # High-level: Persists tuned FHMM emission parameters (std_dev, etc.) to Firestore.
+    async def update_appliance_signature_meta(self, user_id: str, app_name: str, meta: dict):
         try:
-            app_ref = self.db.collection('users').document(user_id) \
-                .collection('appliances').document(app_name)
-            app_ref.update(meta)
+            app_ref = self.db.collection('users').document(user_id).collection('appliances').document(app_name)
+            await app_ref.update(meta)
             AppLog.info("FIRESTORE_META", f"Updated signature metadata for {app_name}: {meta}")
         except Exception as e:
             AppLog.error("FIRESTORE_META", f"Meta update failed for {app_name}: {str(e)}")
 
-    def get_historical_telemetry(self, user_id: str, month: int, year: int):
-        # High-level: Fetches historical wattage readings for a specific billing period.
+    async def get_historical_telemetry(self, unit_id: str, month: int, year: int, block_id: str = None):
         try:
-            # Developer Expectation: Query telemetry collection with timestamp bounds.
-            # For simplicity, we fetch the last 1000 readings for that user.
-            # Real-world would use start/end date filters.
-            docs = self.db.collection('users').document(user_id).collection('telemetry') \
-                .order_by('timestamp', direction=firestore.Query.DESCENDING).limit(1000).stream()
+            # High-Level: Hardware-Centric Data Model
+            # Telemetry is attached to the physical Unit, not the student.
+            if block_id:
+                telemetry_ref = self.db.collection('blocks').document(block_id) \
+                    .collection('units').document(unit_id).collection('telemetry')
+            else:
+                # Collection Group fallback if block_id is unknown
+                telemetry_ref = self.db.collection_group('telemetry')
+                
+            AppLog.info("FIRESTORE_READ", f"Resolving hardware telemetry for Unit: {unit_id} (Block: {block_id})")
             
-            readings = [float(doc.to_dict().get('wattage', 0)) for doc in docs]
-            AppLog.info("FIRESTORE_READ", f"Fetched {len(readings)} historical readings for user: {user_id}")
+            query = telemetry_ref.order_by('timestamp', direction=gcp_firestore.Query.DESCENDING).limit(1000)
+            
+            if not block_id:
+                # Ensure we only get telemetry for the specific unit if using collection group
+                query = query.where(filter=gcp_firestore.FieldFilter('unitId', '==', unit_id))
+
+            docs = query.stream()
+            
+            readings = []
+            async for doc in docs:
+                readings.append(float(doc.to_dict().get('wattage', 0)))
+                
+            AppLog.info("FIRESTORE_READ", f"Fetched {len(readings)} hardware readings for Unit: {unit_id}")
             return readings
         except Exception as e:
-            AppLog.error("FIRESTORE_READ", f"Failed to fetch historical telemetry: {str(e)}")
+            AppLog.error("FIRESTORE_READ", f"Hardware telemetry resolution failed: {str(e)}")
             return []
 
-    def get_user_data(self, user_id: str):
-        # High-level: Retrieves the base user document for configuration and goals.
+    async def get_user_data(self, user_id: str):
         try:
-            doc = self.db.collection('users').document(user_id).get()
+            doc = await self.db.collection('users').document(user_id).get()
             return doc.to_dict() if doc.exists else None
         except Exception as e:
             AppLog.error("FIRESTORE_READ", f"Failed to get user data for {user_id}: {str(e)}")
             return None
 
-    def get_user_role(self, user_id: str):
-        # High-level: Retrieves the role claim from the Firestore user document.
+    async def get_user_role(self, user_id: str):
         try:
-            doc = self.db.collection('users').document(user_id).get()
+            doc = await self.db.collection('users').document(user_id).get()
             if doc.exists:
                 role = doc.to_dict().get('role', 'student')
                 AppLog.info("FIRESTORE_ROLE", f"User {user_id} has role: {role}")
@@ -234,11 +247,10 @@ class FirebaseClient:
             AppLog.error("FIRESTORE_ROLE", f"Failed to fetch role for {user_id}: {str(e)}")
             return 'student'
 
-    def get_monthly_consumption(self, user_id: str, month: int, year: int) -> float:
-        # High-level: Retrieves aggregated monthly consumption from the user's statistics subcollection.
+    async def get_monthly_consumption(self, user_id: str, month: int, year: int) -> float:
         try:
             doc_id = f"{year}_{month}"
-            doc = self.db.collection('users').document(user_id) \
+            doc = await self.db.collection('users').document(user_id) \
                 .collection('stats').document(doc_id).get()
             
             if doc.exists:
@@ -248,25 +260,22 @@ class FirebaseClient:
             AppLog.error("FIRESTORE_READ", f"Failed to fetch monthly consumption: {str(e)}")
             return 0.0
 
-    def increment_monthly_consumption(self, user_id: str, month: int, year: int, amount: float):
-        # High-level: Atomically increments the monthly consumption counter using Firestore increments.
+    async def increment_monthly_consumption(self, user_id: str, month: int, year: int, amount: float):
         try:
             doc_id = f"{year}_{month}"
-            doc_ref = self.db.collection('users').document(user_id) \
-                .collection('stats').document(doc_id)
+            doc_ref = self.db.collection('users').document(user_id).collection('stats').document(doc_id)
             
-            doc_ref.set({
-                "total_kwh": firestore.Increment(amount),
-                "last_updated": firestore.SERVER_TIMESTAMP
+            await doc_ref.set({
+                "total_kwh": gcp_firestore.Increment(amount),
+                "last_updated": gcp_firestore.SERVER_TIMESTAMP
             }, merge=True)
             AppLog.info("FIRESTORE_UPDATE", f"Incremented {user_id} monthly total by {amount}")
         except Exception as e:
             AppLog.error("FIRESTORE_UPDATE", f"Failed to increment monthly total: {str(e)}")
 
-    def send_fcm_notification(self, user_id: str, title: str, body: str):
-        # High-level: Dispatches push notifications to the student's mobile device.
+    async def send_fcm_notification(self, user_id: str, title: str, body: str):
         try:
-            user_doc = self.db.collection('users').document(user_id).get()
+            user_doc = await self.db.collection('users').document(user_id).get()
             if not user_doc.exists:
                 AppLog.warning("FCM_SEND", f"User {user_id} not found.")
                 return
@@ -284,7 +293,7 @@ class FirebaseClient:
                 token=token
             )
             
-            response = messaging.send(message)
+            response = await asyncio.to_thread(messaging.send, message)
             AppLog.info("FCM_SEND", f"Notification sent successfully: {response}")
         except Exception as e:
             AppLog.error("FCM_SEND", f"Failed to dispatch FCM: {str(e)}")

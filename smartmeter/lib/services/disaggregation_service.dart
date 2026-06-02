@@ -24,7 +24,8 @@ class DisaggregationService {
       throw Exception('Auth Pipeline Failure: Failed to resolve token signature.');
     }
 
-    final Uri url = Uri.parse('$_baseUrl/api/v1/disaggregate');
+    // STRUCTURAL FIX: Updated to matched RESTful realtime route
+    final Uri url = Uri.parse('$_baseUrl/api/v1/realtime-disaggregations');
     
     final http.Response response = await _client.post(
       url,
@@ -32,10 +33,11 @@ class DisaggregationService {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $idToken',
       },
+      // STRUCTURAL FIX: Enforced camelCase aliases to match backend Pydantic models
       body: jsonEncode({
-        'user_id': targetId ?? user.uid,
-        'aggregate_readings': aggregateReadings,
-        'manual_overrides': manualOverrides, 
+        'userId': targetId ?? user.uid,
+        'aggregateReadings': aggregateReadings,
+        'manualOverrides': manualOverrides, 
       }),
     );
 
