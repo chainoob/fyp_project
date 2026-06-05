@@ -527,15 +527,15 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
             }
           }
 
-          return Column(
+         return Column(
             children: [
               if (targetStudentId != null) ...[
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: BillSubmissionCard(
-                    userId: widget.unitId, 
+                    userId: targetStudentId,
                     blockId: widget.blockId,
-                    telemetrySourceId: widget.unitId, // Enforce hardware unit telemetry query mapping.
+                    telemetrySourceId: widget.unitId, 
                   ),
                 ),
               ] else ...[

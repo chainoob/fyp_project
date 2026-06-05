@@ -196,34 +196,31 @@ class FirebaseClient:
             AppLog.error("FIRESTORE_META", f"Meta update failed for {app_name}: {str(e)}")
 
     async def get_historical_telemetry(self, unit_id: str, month: int, year: int, block_id: str = None):
+        import calendar
         try:
-            # High-Level: Hardware-Centric Data Model
-            # Telemetry is attached to the physical Unit, not the student.
-            if block_id:
-                telemetry_ref = self.db.collection('blocks').document(block_id) \
-                    .collection('units').document(unit_id).collection('telemetry')
-            else:
-                # Collection Group fallback if block_id is unknown
-                telemetry_ref = self.db.collection_group('telemetry')
+            telemetry_ref = self.db.collection('users').document(unit_id).collection('telemetry')
+            
+            start_date = datetime.datetime(year, month, 1, tzinfo=datetime.timezone.utc)
+            last_day = calendar.monthrange(year, month)[1]
+            end_date = datetime.datetime(year, month, last_day, 23, 59, 59, tzinfo=datetime.timezone.utc)
+            
+            query = telemetry_ref.where(filter=gcp_firestore.FieldFilter('timestamp', '>=', start_date)) \
+                                 .where(filter=gcp_firestore.FieldFilter('timestamp', '<=', end_date))
+            
+            docs_list = []
+            async for doc in query.stream():
+                docs_list.append(doc.to_dict())
                 
-            AppLog.info("FIRESTORE_READ", f"Resolving hardware telemetry for Unit: {unit_id} (Block: {block_id})")
-            
-            query = telemetry_ref.order_by('timestamp', direction=gcp_firestore.Query.DESCENDING).limit(1000)
-            
-            if not block_id:
-                # Ensure we only get telemetry for the specific unit if using collection group
-                query = query.where(filter=gcp_firestore.FieldFilter('unitId', '==', unit_id))
-
-            docs = query.stream()
-            
-            readings = []
-            async for doc in docs:
-                readings.append(float(doc.to_dict().get('wattage', 0)))
+            if not docs_list:
+                return []
                 
-            AppLog.info("FIRESTORE_READ", f"Fetched {len(readings)} hardware readings for Unit: {unit_id}")
+            # Sequence enforcement for temporal ML models
+            docs_list.sort(key=lambda x: x.get('timestamp', start_date))
+            readings = [float(doc.get('wattage', 0.0)) for doc in docs_list if 'wattage' in doc]
+            
             return readings
         except Exception as e:
-            AppLog.error("FIRESTORE_READ", f"Hardware telemetry resolution failed: {str(e)}")
+            AppLog.error("FIRESTORE_READ", f"Telemetry fetch failed: {str(e)}")
             return []
 
     async def get_user_data(self, user_id: str):

@@ -32,9 +32,9 @@ class VerificationScreen extends StatelessWidget {
       itemBuilder: (ctx, index) {
         final uid = ownerIds[index];
         return _StudentGroupCard(
-          key: ValueKey(uid), // Maintain independent state contexts per student identifier.
+          key: ValueKey(uid), 
           uid: uid,
-          unitId: "unit_${DateTime.now().month}_${DateTime.now().year}", // Dynamic unit context for telemetry generation.
+          unitId: uid, 
           studentApps: groupedData[uid]!,
         );
       },

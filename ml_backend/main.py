@@ -177,53 +177,38 @@ async def run_optimization(request: OptimizationRequest, token: dict = Depends(v
 async def trigger_batch_disaggregation(request: BatchDisaggregationRequest, background_tasks: BackgroundTasks, token: dict = Depends(verify_firebase_token)):
     try:
         is_staff = await db.get_user_role(token["uid"]) == 'staff'
+
+        from utils.auth import validate_user_ownership
         validate_user_ownership(request.user_id, token["uid"], is_staff=is_staff)
 
-        target_unit_id = request.user_id
-        block_id = getattr(request, 'block_id', None) or getattr(request, 'blockId', None)
+        student_uid = request.user_id
+        telemetry_node = getattr(request, 'telemetry_source_id', student_uid) or student_uid
 
-        # High-Level: Hardware-Centric Resolution
-        # Telemetry is stored at blocks/{blockId}/units/{unitId}/telemetry.
-        # Student profile functions as a temporal pointer to this fixed physical node.
+        # Route extraction to Unit node
         readings = await db.get_historical_telemetry(
-            target_unit_id, 
+            telemetry_node, 
             request.month, 
-            request.year,
-            block_id=block_id
+            request.year
         )
         
         if not readings:
-            logger.warning(f"Batch processing aborted: No hardware telemetry found at Unit: {target_unit_id}")
-            return format_api_response(False, message="No hardware telemetry found for the selected period.", status_code=400)
-
-        # Async query resolution: Resolve students currently mapped to this physical hardware node
-        users_query = db.db.collection('users').where(filter=gcp_firestore.FieldFilter('assignedUnitId', '==', target_unit_id))
-        
-        student_uids = []
-        async for doc in users_query.stream():
-            student_uids.append(doc.id)
-
-        if not student_uids:
-            logger.info(f"Unit {target_unit_id} vacant. Routing results to Unit ID itself.")
-            student_uids = [target_unit_id]
+            return format_api_response(False, message="No telemetry found for the selected period.", status_code=400)
 
         payloads = await _run_multi_tenant_pipeline(
-            target_unit_id,
-            student_uids,
-            readings,
-            request
+            unit_id=telemetry_node,
+            student_uids=[student_uid],
+            readings=readings,
+            request=request
         )
 
         for payload in payloads:
             background_tasks.add_task(db.save_disaggregation_result, payload)
 
-        if payloads:
-            master_payload = _build_master_unit_payload(target_unit_id, payloads, request)
-            background_tasks.add_task(db.save_disaggregation_result, master_payload)
-
-        return format_api_response(True, data={"students_processed": len(student_uids)})
+        return format_api_response(True, data={"students_processed": 1})
+        
     except Exception as e:
-        logger.error(f"Batch pipeline failed: {str(e)}", exc_info=True)
+        import logging
+        logging.error(f"Batch pipeline failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal processing error on batch disaggregation.")
 
 @app.post("/api/v1/realtime-disaggregations")
@@ -317,21 +302,21 @@ async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request):
         registered_types = {str(app.get('type', '')).lower() for app in registered_appliances.values() if app.get('type')}
 
         breakdown = {}
-        for app_name, app_data in registered_appliances.items():
-            app_type = app_data.get('type', app_name)
+        for app_id, app_data in registered_appliances.items():
+            app_type = app_data.get('type', 'Unknown').capitalize()
             
-            # NOTE: Assuming apply_adaptive_hybrid_logic has been updated to `async def` since it takes `db` as an arg.
             raw_usage = await apply_adaptive_hybrid_logic(
                 db=db,
                 user_id=uid,
-                appliance_name=app_type,
+                appliance_name=app_type.lower(),
                 manual_overrides={},
                 network_states={},
                 fhmm_predictions=normalized_fhmm,
                 registered_types=registered_types,
                 current_hour=12
             )
-            breakdown[app_name] = raw_usage
+            
+            breakdown[app_type] = breakdown.get(app_type, 0.0) + raw_usage
 
         student_raw_breakdowns[uid] = breakdown
         room_raw_total += sum(breakdown.values())

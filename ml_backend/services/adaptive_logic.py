@@ -30,6 +30,8 @@ def get_tod_probability(db, user_id: str, appliance: str, current_hour: int) -> 
     except Exception:
         return 0.0
     
+import numpy as np
+
 async def apply_adaptive_hybrid_logic(db, user_id, appliance_name, manual_overrides, network_states, fhmm_predictions, registered_types, current_hour):
     # High-level: Executes 3-Tier Hybrid Logic with dynamic adaptive ToD weighting.
     key = appliance_name.lower()
@@ -37,13 +39,20 @@ async def apply_adaptive_hybrid_logic(db, user_id, appliance_name, manual_overri
     
     if key in manual_overrides:
         final_state = manual_overrides[key]
-        log_manual_override(db, user_id, key, final_state)
+        # Ensure log_manual_override is either awaited if async, or executed synchronously if not
+        log_manual_override(db, user_id, key, final_state) 
     elif key in network_states:
         final_state = network_states[key]
 
-    power_series = fhmm_predictions.get(key, [])
-    instantaneous_wattage = float(np.mean(power_series)) if len(power_series) > 0 else 0.0
-    kwh_value = round(sum(power_series) / 1000.0, 3)
+    # Extract raw predictions, defaulting to an empty list
+    power_series_raw = fhmm_predictions.get(key, [])
+    
+    # Normalize inputs to a 1D array to prevent scalar float iteration crashes
+    power_series = np.atleast_1d(power_series_raw)
+    
+    # Execute extraction using array properties
+    instantaneous_wattage = float(np.mean(power_series)) if power_series.size > 0 else 0.0
+    kwh_value = round(float(np.sum(power_series)) / 1000.0, 3)
 
     if final_state is not None:
         if final_state == 0.0:

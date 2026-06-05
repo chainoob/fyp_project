@@ -1,7 +1,4 @@
 // lib/models/disaggregation_response.dart6
-
-
-
 class DisaggregationResponse {
   final String status;
   final DisaggregationData data;

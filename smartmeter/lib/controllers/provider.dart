@@ -249,26 +249,37 @@ class ApplianceProvider extends ChangeNotifier {
     await _repo.deleteAppliance(userId, appId);
   }
 
-  Future<void> approve(String userId, String appId, String unitId) async {
-  // Execute state mutation immediately.
-  await _repo.updateApplianceStatus(userId, appId, 'active');
+ Future<void> approve(String userId, String appId, String ignoredUiUnitId) async {
+    // Execute state mutation immediately.
+    await _repo.updateApplianceStatus(userId, appId, 'active');
 
-  final int remainingPending = _pendingQueue
-      .where((entry) => entry.key == userId && entry.value.id != appId)
-      .length;
+    final int remainingPending = _pendingQueue
+        .where((entry) => entry.key == userId && entry.value.id != appId)
+        .length;
 
-  if (remainingPending == 0) {
-    final now = DateTime.now();
-    
-    _apiService.seedSyntheticReddData(
-      unitId, 
-      month: now.month, 
-      year: now.year
-    ).catchError((error) {
-      debugPrint("Telemetry generation background task failed: $error");
-    });
+    if (remainingPending == 0) {
+      try {
+        final userDoc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
+        final String? targetUnitId = userDoc.data()?['assignedUnitId'];
+
+        if (targetUnitId != null && targetUnitId.isNotEmpty) {
+          final now = DateTime.now();
+          
+          _apiService.seedSyntheticReddData(
+            targetUnitId, 
+            month: now.month, 
+            year: now.year
+          ).catchError((error) {
+            debugPrint("Telemetry generation background task failed: $error");
+          });
+        } else {
+          debugPrint("Abort generation: Student lacks physical unit assignment.");
+        }
+      } catch (e) {
+        debugPrint("Unit resolution failed: $e");
+      }
+    }
   }
-}
 
   Future<void> reject(String userId, String appId) async =>
       await _repo.updateApplianceStatus(userId, appId, 'rejected');

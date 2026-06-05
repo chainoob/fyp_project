@@ -261,34 +261,24 @@ class FirestoreRepository implements EnergyRepository {
   }
 
   @override
-  Stream<List<double>> getLiveReadingsStream(String userId) {
-    // High-Level: Hardware-Centric Data Model
-    // Resolve the physical unit path from the student's profile pointer.
-    return _db.collection('users').doc(userId).snapshots().asyncExpand((userDoc) {
-      if (!userDoc.exists) return Stream.value([]);
-      
-      final data = userDoc.data()!;
-      final String? unitId = data['assignedUnitId'];
-      final String? blockId = data['dormBlockId'] ?? data['dormBlock']; // Support both name and ID mapping
-      
-      if (unitId == null) {
-        // Fallback to legacy personal path only if room assignment is missing
-        return _db.collection('users').doc(userId).collection('telemetry')
-            .orderBy('timestamp', descending: true).limit(10).snapshots().map(
-              (s) => s.docs.map((d) => (d.data()['wattage'] as num).toDouble()).toList());
+ Stream<List<double>> getLiveReadingsStream(String userId) {
+    return _db
+        .collection('users')
+        .doc(userId)
+        .collection('telemetry')
+        .orderBy('timestamp', descending: true)
+        .limit(10)
+        .snapshots()
+        .map((snapshot) {
+      if (snapshot.docs.isEmpty) {
+        return <double>[];
       }
-
-      // Production Hardware Node
-      Query query;
-      if (blockId != null) {
-        query = _db.collection('blocks').doc(blockId).collection('units').doc(unitId).collection('telemetry');
-      } else {
-        // Collection Group fallback for units with incomplete relational metadata
-        query = _db.collectionGroup('telemetry').where('unitId', isEqualTo: unitId);
-      }
-
-      return query.orderBy('timestamp', descending: true).limit(10).snapshots().map(
-        (s) => s.docs.map((d) => (d.data()['wattage'] as num).toDouble()).toList());
+      
+      return snapshot.docs
+          .map((doc) => (doc.data()['wattage'] as num).toDouble())
+          .toList()
+          .reversed
+          .toList();
     });
   }
 

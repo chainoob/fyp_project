@@ -28,11 +28,8 @@ class _StaffShellState extends State<StaffShell> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final now = DateTime.now();
-      
       context.read<ApplianceProvider>().subscribeToQueue();
       context.read<GoalProvider>().subscribeToCampus();
-      
-      // Hardware telemetry disabled. Route strictly to batch report fetch.
       context.read<EnergyProvider>().loadReport(
         scope: 'Campus',
         month: now.month,
@@ -127,23 +124,6 @@ class _StaffDashboardState extends State<StaffDashboard> {
             focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: Color(0xFF00E5FF))),
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("Cancel", style: TextStyle(color: Colors.white54)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final double? newGoal = double.tryParse(controller.text);
-              if (newGoal != null && newGoal > 0) {
-                goalProvider.setGoal(newGoal);
-              }
-              Navigator.pop(ctx);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E5FF)),
-            child: const Text("Save", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-          ),
-        ],
       ),
     );
   }
@@ -162,8 +142,6 @@ class _StaffDashboardState extends State<StaffDashboard> {
     final double safePercentage = targetGoalKwh > 0 ? (totalUsageKwh / targetGoalKwh).clamp(0.0, 1.0) : 0.0;
 
     final Map<String, double> breakdown = energyProvider.applianceBreakdown;
-    
-    // STRUCTURAL FIX: Anomalies now read strictly from the static batch report
     final List<String> anomalies = report?.anomalies ?? [];
 
     return ListView(
@@ -202,16 +180,14 @@ class _StaffDashboardState extends State<StaffDashboard> {
                       children: [
                         Icon(Icons.memory, size: 10, color: Colors.blueAccent),
                         SizedBox(width: 6),
-                        Text("BATCH AI",
-                            style: TextStyle(color: Colors.blueAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                        Text("BATCH AI", style: TextStyle(color: Colors.blueAccent, fontSize: 10, fontWeight: FontWeight.bold)),
                       ],
                     ),
                   )
                 ],
               ),
               const SizedBox(height: 12),
-              Text("${totalUsageKwh.toStringAsFixed(1)} kWh",
-                  style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text("${totalUsageKwh.toStringAsFixed(1)} kWh", style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Colors.white)),
               const SizedBox(height: 8),
               if (energyProvider.isLoading)
                  const Row(
@@ -246,11 +222,26 @@ class _StaffDashboardState extends State<StaffDashboard> {
           ...anomalies.map((a) => _AnomalyTile(message: a)),
         ],
 
+        // UX REFAC: Wrapped flat profiles inside a localized progressive disclosure card
         if (breakdown.isNotEmpty) ...[
           const SizedBox(height: 24),
-          const Text("Detected Appliance Profiles", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
-          const SizedBox(height: 12),
-          ...breakdown.entries.map((e) => _ApplianceUsageTile(name: e.key, value: e.value)),
+          Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: Colors.grey.withValues(alpha: 0.2)),
+            ),
+            child: Theme(
+              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                leading: const Icon(Icons.analytics_outlined, color: AppTheme.navyBlue),
+                title: const Text("Campus Appliance Insights", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black, fontSize: 15)),
+                subtitle: Text("Statistical load categorized across ${breakdown.length} device types", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                childrenPadding: const EdgeInsets.only(left: 12, right: 12, bottom: 12),
+                children: breakdown.entries.map((e) => _ApplianceUsageTile(name: e.key, value: e.value)).toList(),
+              ),
+            ),
+          ),
         ],
 
         const SizedBox(height: 24),
@@ -393,26 +384,23 @@ class _ApplianceUsageTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.withValues(alpha: 0.2)),
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.03),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.1)),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            Icon(_getIconForAppliance(name), color: AppTheme.ecoTeal),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
-            ),
-            Text("${value.toStringAsFixed(3)} kWh", 
-              style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.navyBlue)),
-          ],
-        ),
+      child: Row(
+        children: [
+          Icon(_getIconForAppliance(name), color: AppTheme.ecoTeal, size: 18),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+          ),
+          Text("${value.toStringAsFixed(3)} kWh", style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.navyBlue, fontSize: 13)),
+        ],
       ),
     );
   }
