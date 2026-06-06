@@ -304,3 +304,35 @@ class DailyUsagePoint {
     );
   }
 }
+
+class ForecastResponse {
+  final String userId;
+  final int targetMonth;
+  final int targetYear;
+  final double currentConsumption;
+  final double projectedAddition;
+  final double estimatedEndOfMonthTotal;
+  final String methodApplied;
+
+  ForecastResponse({
+    required this.userId,
+    required this.targetMonth,
+    required this.targetYear,
+    required this.currentConsumption,
+    required this.projectedAddition,
+    required this.estimatedEndOfMonthTotal,
+    required this.methodApplied,
+  });
+
+  factory ForecastResponse.fromJson(Map<String, dynamic> json) {
+    return ForecastResponse(
+      userId: json['userId'] ?? '',
+      targetMonth: json['targetMonth'] ?? 0,
+      targetYear: json['targetYear'] ?? 0,
+      currentConsumption: (json['currentConsumption'] ?? 0.0).toDouble(),
+      projectedAddition: (json['projectedAddition'] ?? 0.0).toDouble(),
+      estimatedEndOfMonthTotal: (json['estimatedEndOfMonthTotal'] ?? 0.0).toDouble(),
+      methodApplied: json['methodApplied'] ?? 'unknown',
+    );
+  }
+}

@@ -10,6 +10,28 @@ import 'routes/app_router.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    return Material(
+      color: const Color(0xFF121212),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("FATAL EXCEPTION", style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              Text(details.exceptionAsString(), style: const TextStyle(color: Colors.yellowAccent, fontSize: 14)),
+              const SizedBox(height: 12),
+              Text(details.stack?.toString() ?? "No stack trace", style: const TextStyle(color: Colors.white54, fontSize: 11)),
+            ],
+          ),
+        ),
+      ),
+    );
+  };
+
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );

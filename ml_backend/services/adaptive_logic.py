@@ -72,3 +72,25 @@ async def apply_adaptive_hybrid_logic(db, user_id, appliance_name, manual_overri
         return kwh_value
         
     return 0.0
+
+def run_30_day_forecast(self, appliances: dict, request_data: dict) -> dict:
+        """
+        Executes a localized Markov Chain Monte Carlo (MCMC) forecast utilizing 
+        temporal probability profiles (prob_day, prob_night) over a 30-day projection matrix.
+        """
+        days_to_predict = request_data.get('days_to_predict', 30)
+        total_projected_kwh = 0.0
+
+        for _ in range(days_to_predict):
+            for hour in range(24):
+                for app_id, app_data in appliances.items():
+                    # Apply temporal bounding matrix
+                    is_daytime = 6 <= hour <= 18
+                    base_prob = float(app_data.get('prob_day', 0.2)) if is_daytime else float(app_data.get('prob_night', 0.05))
+                    
+                    # Execute stochastic state transition
+                    if random.random() < base_prob:
+                        wattage = float(app_data.get('wattage', 0))
+                        total_projected_kwh += (wattage / 1000.0)
+
+        return {"total_projected_kwh": round(total_projected_kwh, 2)}

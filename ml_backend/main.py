@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import firestore as gcp_firestore
 
 from services.adaptive_logic import apply_adaptive_hybrid_logic
-from models.request_models import FeedbackRequest, OptimizationRequest, SeedReddRequest, SyncRequest, DisaggregationRequest, BatchDisaggregationRequest
+from models.request_models import FeedbackRequest, ForecastRequest, OptimizationRequest, SeedReddRequest, SyncRequest, DisaggregationRequest, BatchDisaggregationRequest
 from services.firebase_client import FirebaseClient
 from services.simulator import AdaptiveBehavioralSimulator
 from services.optimizer import EnergyOptimizer
@@ -252,25 +252,20 @@ async def process_realtime_telemetry(request: DisaggregationRequest, background_
         raise HTTPException(status_code=500, detail="Internal processing error on streaming window.")
 
 async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request):
-    # Step 1: Validate Telemetry Input
     logger.info(f"Pipeline Input - Readings Length: {len(readings)}")
     logger.info(f"Pipeline Input - First 5 readings: {readings[:5]}")
     
-    # Step 3: Verification of Unit/Student Linkage
     logger.info(f"Resolving students for Unit ID: {unit_id}")
     logger.info(f"Students found: {student_uids}")
 
-    # OOM Fix: Temporal Downsampling
     max_ml_points = 2000
     reduction_factor = max(1, len(readings) // max_ml_points)
     decimated_readings = readings[::reduction_factor]
 
-    # OOM Fix: Memory-efficient Numpy Array (Float32)
     np_readings = np.array(decimated_readings, dtype=np.float32)
     series_readings = pd.Series(np_readings).rolling(window=5, min_periods=1, center=True).median().dropna()
     smoothed_readings = series_readings.values.tolist()
 
-    # CPU Starvation Fix: Process Viterbi algorithm in 24h chunks offloaded to thread pool
     chunk_size = 1440 
     aggregated_fhmm = {}
     
@@ -278,7 +273,6 @@ async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request):
         chunk = smoothed_readings[i:i + chunk_size]
         chunk_results = await asyncio.to_thread(fhmm.disaggregate, chunk)
         
-        # Step 2: Check FHMM Result Population
         logger.info(f"FHMM Output for chunk: {chunk_results}")
         
         for k, v in chunk_results.items():
@@ -512,6 +506,61 @@ def generate_recommendations(breakdown: dict) -> list:
         advice.append("Usage patterns are within optimal ranges.")
     return advice
 
+@app.post("/api/v1/forecasts")
+async def generate_energy_forecast(request: ForecastRequest, token: dict = Depends(verify_firebase_token)):
+    is_staff = await db.get_user_role(token["uid"]) == 'staff'
+    validate_user_ownership(request.user_id, token["uid"], is_staff=is_staff)
+
+    user_id = request.user_id
+    appliances = await db.get_user_appliances(user_id)
+    
+    logger.info(f"TRACE: Appliance count: {len(appliances) if appliances else 0}")
+
+    if not appliances:
+        raise HTTPException(status_code=400, detail="No active appliances registered for forecasting.")
+
+    current_consumption = await db.get_monthly_consumption(user_id, request.target_month, request.target_year)
+    logger.info(f"TRACE: Current consumption: {current_consumption}")
+
+    try:
+        forecast_result = await asyncio.wait_for(
+            asyncio.to_thread(getattr(simulator, 'run_30_day_forecast', simulator.run_monte_carlo), appliances, request.model_dump()),
+            timeout=8.0
+        )
+        logger.info(f"TRACE: MCMC raw output: {forecast_result}")
+        
+        projected_load = sum(float(val) for val in forecast_result.get('appliance_totals', {}).values())
+        method_used = "mcmc_stochastic"
+
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"TRACE: MCMC aborted: {str(e)}")
+        
+        if current_consumption > 0:
+            current_day = datetime.datetime.now(datetime.timezone.utc).day
+            daily_average = current_consumption / max(1, current_day)
+            projected_load = daily_average * request.days_to_predict
+        else:
+            projected_load = sum(float(app.get('wattage', 0)) / 1000.0 * 4.0 for app in appliances.values()) * request.days_to_predict
+
+        method_used = "linear_heuristic"
+
+    total_predicted = current_consumption + projected_load
+
+    payload = {
+        "userId": user_id,
+        "targetMonth": request.target_month,
+        "targetYear": request.target_year,
+        "currentConsumption": round(current_consumption, 2),
+        "projectedAddition": round(projected_load, 2),
+        "estimatedEndOfMonthTotal": round(total_predicted, 2),
+        "methodApplied": method_used,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+    }
+    
+    logger.info(f"TRACE: Final Payload: {payload}")
+
+    return format_api_response(True, data=payload)
+
 @app.post("/api/v1/feedbacks")
 async def handle_feedback(request: FeedbackRequest, token: dict = Depends(verify_firebase_token)):
     try:
@@ -659,3 +708,4 @@ async def seed_exact_synthetic_redd(request: SeedReddRequest, token: dict = Depe
     except Exception as e:
         logger.error(f"Seeding failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    

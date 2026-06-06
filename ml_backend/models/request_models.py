@@ -58,3 +58,9 @@ class SeedReddRequest(BaseModel):
 class AggregationRequest(BaseModel):
     month: int
     year: int
+
+class ForecastRequest(BaseModel):
+    user_id: str
+    target_month: int
+    target_year: int
+    days_to_predict: int = 30

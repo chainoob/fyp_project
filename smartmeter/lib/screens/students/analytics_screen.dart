@@ -2,8 +2,10 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:smartmeter/controllers/provider.dart';
 import 'package:smartmeter/models/app_model.dart';
+import 'package:smartmeter/services/api_service.dart';
 
 class AnalyticsScreen extends StatefulWidget {
   const AnalyticsScreen({super.key});
@@ -16,6 +18,12 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   int _touchedIndex = -1; 
   DateTime _selectedDate = DateTime.now();
 
+  ForecastResponse? _forecast;
+  bool _isLoadingForecast = true;
+  // ignore: unused_field
+  String? _forecastError;
+  final ApiService _apiService = ApiService();
+
   final Color _bgDark = const Color(0xFF121212);      
   final Color _cardDark = const Color(0xFF1E1E1E);    
   final Color _textPrimary = Colors.white;            
@@ -25,12 +33,35 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   @override
   void initState() {
     super.initState();
-    final now = DateTime.now();
-    _selectedDate = DateTime(now.year, now.month, 1);
+    _fetchForecastData();
+  }
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _fetchHistoricalData();
-    });
+ Future<void> _fetchForecastData() async {
+    final now = DateTime.now();
+    final user = FirebaseAuth.instance.currentUser;
+    
+    if (user == null) {
+      if (mounted) setState(() => _isLoadingForecast = false);
+      return;
+    }
+
+    try {
+      final result = await _apiService.getEnergyForecast(user.uid, now.month, now.year);
+      if (mounted) {
+        setState(() {
+          _forecast = result;
+          _isLoadingForecast = false;
+          _forecastError = null;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoadingForecast = false;
+          _forecastError = e.toString();
+        });
+      }
+    }
   }
 
   void _fetchHistoricalData() {
@@ -120,7 +151,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     }
 
     final List<Appliance> appliances = applianceProvider.appliances;
-
     final Map<String, dynamic> rawBreakdown = staticReport.applianceBreakdown;
     final Map<int, double> rawHourly = staticReport.hourlyUsage;
     final List<String> anomalies = staticReport.anomalies;
@@ -151,12 +181,30 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         .where((key) => key != 'Unregistered Load')
         .toList();
 
+    // Default target extraction (Replace with precise User goal extraction if available in auth state)
+    final double targetEnergyGoal = 300.0; 
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildMonthSelector(),
+          const SizedBox(height: 24),
+
+          if (_isLoadingForecast)
+            const Center(child: CircularProgressIndicator())
+          else if (_forecast != null)
+            _buildForecastCard(_forecast!, targetEnergyGoal)
+          else
+            Card(
+              color: _cardDark,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text('Forecast data currently unavailable. Check network connection.', style: TextStyle(color: _textSecondary)),
+              ),
+            ),
+          
           const SizedBox(height: 24),
 
           if (anomalies.isNotEmpty) ...[
@@ -611,6 +659,50 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                 ),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildForecastCard(ForecastResponse forecast, double energyGoal) {
+    final bool isOverBudget = forecast.estimatedEndOfMonthTotal > energyGoal;
+    final Color statusColor = isOverBudget ? Colors.redAccent : Colors.greenAccent;
+
+    return Card(
+      color: _cardDark,
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Colors.white12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('30-Day Automated Forecast', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: _textPrimary)),
+            const SizedBox(height: 12),
+            Text('Current Usage: ${forecast.currentConsumption} kWh', style: TextStyle(color: _textSecondary)),
+            Text('Projected Addition: +${forecast.projectedAddition} kWh', style: TextStyle(color: _textSecondary)),
+            const Divider(color: Colors.white12, height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Estimated Month Total:', style: TextStyle(fontWeight: FontWeight.w600, color: _textPrimary)),
+                Text(
+                  '${forecast.estimatedEndOfMonthTotal} kWh',
+                  style: TextStyle(
+                    color: statusColor,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (isOverBudget)
+              const Text(
+                'Warning: Projected to exceed energy budget.',
+                style: TextStyle(color: Colors.redAccent, fontSize: 12),
+              ),
           ],
         ),
       ),
