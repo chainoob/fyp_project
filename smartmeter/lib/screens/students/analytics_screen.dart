@@ -33,11 +33,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   @override
   void initState() {
     super.initState();
-    _fetchForecastData();
+    _fetchForecastData(_selectedDate.month, _selectedDate.year);
   }
 
- Future<void> _fetchForecastData() async {
-    final now = DateTime.now();
+ Future<void> _fetchForecastData(int month, int year) async {
     final user = FirebaseAuth.instance.currentUser;
     
     if (user == null) {
@@ -46,7 +45,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     }
 
     try {
-      final result = await _apiService.getEnergyForecast(user.uid, now.month, now.year);
+      final result = await _apiService.getEnergyForecast(user.uid, month, year);
       if (mounted) {
         setState(() {
           _forecast = result;
@@ -57,6 +56,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
+          _forecast = null;
           _isLoadingForecast = false;
           _forecastError = e.toString();
         });
@@ -79,8 +79,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   void _changeMonth(int offset) {
     setState(() {
       _selectedDate = DateTime(_selectedDate.year, _selectedDate.month + offset);
+      _isLoadingForecast = true;
+      _forecast = null;
     });
     _fetchHistoricalData(); 
+    _fetchForecastData(_selectedDate.month, _selectedDate.year);
   }
 
   @override
@@ -106,82 +109,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       return Center(child: CircularProgressIndicator(color: _cCyan));
     }
 
-    if (provider.errorMessage != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
-              const SizedBox(height: 16),
-              const Text(
-                "Data Pipeline Failure",
-                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                provider.errorMessage!,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.redAccent),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
     final staticReport = provider.currentReport;
-
-    if (staticReport == null) {
-      return Column(
-        children: [
-          _buildMonthSelector(),
-          const Expanded(
-            child: Center(
-              child: Text(
-                "No analysis data available for this month.\nAwaiting staff batch submission.",
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white54),
-              ),
-            ),
-          ),
-        ],
-      );
-    }
-
-    final List<Appliance> appliances = applianceProvider.appliances;
-    final Map<String, dynamic> rawBreakdown = staticReport.applianceBreakdown;
-    final Map<int, double> rawHourly = staticReport.hourlyUsage;
-    final List<String> anomalies = staticReport.anomalies;
-    final Map<String, double> benchmarkBreakdown = staticReport.benchmarkBreakdown;
-    final String keyIssue = staticReport.summary.keyIssue;
-
-    final Map<String, double> sanitizedBreakdown = {};
-    double unregisteredLoad = 0.0;
-
-    rawBreakdown.forEach((key, value) {
-      final matchingApp = appliances.where(
-        (a) => a.type.toLowerCase() == key.toLowerCase()
-      ).firstOrNull;
-
-      if (matchingApp != null) {
-        sanitizedBreakdown[matchingApp.name] = (value as num).toDouble();
-      } else {
-        unregisteredLoad += (value as num).toDouble();
-      }
-    });
-
-    if (unregisteredLoad > 0) {
-      sanitizedBreakdown['Unregistered Load'] = unregisteredLoad;
-    }
-
-    final double localizedTotalConsumption = sanitizedBreakdown.values.fold(0.0, (sum, value) => sum + value);
-    final List<String> feedbackTargets = sanitizedBreakdown.keys
-        .where((key) => key != 'Unregistered Load')
-        .toList();
-
-    // Default target extraction (Replace with precise User goal extraction if available in auth state)
     final double targetEnergyGoal = 300.0; 
 
     return SingleChildScrollView(
@@ -207,29 +135,48 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           
           const SizedBox(height: 24),
 
-          if (anomalies.isNotEmpty) ...[
-            _buildAnomaliesCard(anomalies),
+          if (staticReport != null) ...[
+            if (staticReport.anomalies.isNotEmpty) ...[
+              _buildAnomaliesCard(staticReport.anomalies),
+              const SizedBox(height: 24),
+            ],
+
+            _buildSectionTitle("AI Prediction Verification"),
+            const SizedBox(height: 12),
+            
+            _buildFeedbackCard(
+              staticReport.applianceBreakdown.keys.toList()
+            ), 
+            
             const SizedBox(height: 24),
+
+            _buildBreakdownCard(
+              staticReport.summary.totalConsumption, 
+              staticReport.applianceBreakdown.entries.map((e) => MapEntry(e.key, e.value.toDouble())).toList(), 
+              staticReport.summary.keyIssue,
+              staticReport.benchmarkBreakdown,
+            ),
+            const SizedBox(height: 24),
+          ] else ...[
+             Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 40.0),
+                child: Text(
+                  "Historical analysis data unavailable for this month.\nAwaiting disaggregation results.",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: _textSecondary),
+                ),
+              ),
+            ),
           ],
 
-          _buildSectionTitle("AI Prediction Verification"),
-          const SizedBox(height: 12),
-          
-          _buildFeedbackCard(feedbackTargets), 
-          
-          const SizedBox(height: 24),
-
-          _buildBreakdownCard(
-            localizedTotalConsumption, 
-            sanitizedBreakdown.entries.toList(), 
-            keyIssue,
-            benchmarkBreakdown,
-          ),
-          
-          const SizedBox(height: 24),
           _buildSectionTitle("24h Load Profile"),
           const SizedBox(height: 12),
-          _buildHourlyTrendCard(rawHourly),
+          _buildHourlyTrendCard(
+            (staticReport?.hourlyUsage ?? {}).isNotEmpty 
+                ? staticReport!.hourlyUsage 
+                : (_forecast?.mcmcHourlyProfile ?? {})
+          ),
         ],
       ),
     );
@@ -403,7 +350,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                     children: entries.asMap().entries.map((e) {
                       final index = e.key;
                       final entry = e.value;
-                      final percentage = (entry.value / totalConsumption) * 100;
+                      final percentage = totalConsumption > 0 ? (entry.value / totalConsumption) * 100 : 0.0;
                       
                       final benchmarkVal = benchmark[entry.key] ?? 0.0;
                       final bool isOverBenchmark = entry.value > benchmarkVal && benchmarkVal > 0;
@@ -668,6 +615,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   Widget _buildForecastCard(ForecastResponse forecast, double energyGoal) {
     final bool isOverBudget = forecast.estimatedEndOfMonthTotal > energyGoal;
     final Color statusColor = isOverBudget ? Colors.redAccent : Colors.greenAccent;
+    final double estimatedCost = ReportSummary.calculateMalaysianTariffA(forecast.estimatedEndOfMonthTotal);
 
     return Card(
       color: _cardDark,
@@ -682,6 +630,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             const SizedBox(height: 12),
             Text('Current Usage: ${forecast.currentConsumption} kWh', style: TextStyle(color: _textSecondary)),
             Text('Projected Addition: +${forecast.projectedAddition} kWh', style: TextStyle(color: _textSecondary)),
+            Text('Estimated Monthly Cost: RM ${estimatedCost.toStringAsFixed(2)}', style: TextStyle(color: _textSecondary)),
             const Divider(color: Colors.white12, height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,

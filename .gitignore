@@ -36,5 +36,8 @@ google-services.json
 #tests
 ml_backend/tests
 
+#ai-agents
+*.agents
+
 *.ps1
 *.h5

@@ -58,9 +58,17 @@ class SeedReddRequest(BaseModel):
 class AggregationRequest(BaseModel):
     month: int
     year: int
+    block_id: Optional[str] = Field(None, alias="blockId")
+
+    class Config:
+        populate_by_name = True
 
 class ForecastRequest(BaseModel):
     user_id: str
     target_month: int
     target_year: int
     days_to_predict: int = 30
+    manual_overrides: Dict[str, float] = Field(default_factory=dict)
+    
+    class Config:
+        populate_by_name = True

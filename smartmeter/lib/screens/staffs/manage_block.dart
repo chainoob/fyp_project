@@ -373,19 +373,26 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
     final nameController = TextEditingController(text: room?['name'] ?? '');
     final capacityController = TextEditingController(text: room?['capacity']?.toString() ?? '1');
     
-    Map<String, dynamic>? selectedStudent;
-    Map<String, dynamic>? originalStudent;
+    List<Map<String, dynamic>> selectedStudents = [];
+    List<Map<String, dynamic>> originalStudents = [];
     
-    // Extract existing occupant data for assignment tracking.
-    if (room != null && room['occupant'] != null) {
-      selectedStudent = Map<String, dynamic>.from(room['occupant']);
-      originalStudent = Map<String, dynamic>.from(room['occupant']); 
+    if (room != null) {
+      final data = room.data() as Map<String, dynamic>;
+      if (data.containsKey('occupants')) {
+        selectedStudents = List<Map<String, dynamic>>.from(data['occupants']);
+        originalStudents = List<Map<String, dynamic>>.from(data['occupants']);
+      } else if (data.containsKey('occupant') && data['occupant'] != null) {
+        selectedStudents = [Map<String, dynamic>.from(data['occupant'])];
+        originalStudents = [Map<String, dynamic>.from(data['occupant'])];
+      }
     }
 
     await showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setState) {
+          final int capacity = int.tryParse(capacityController.text) ?? 1;
+
           return AlertDialog(
             title: Text(room == null ? "Add Room" : "Edit Room"),
             content: SingleChildScrollView(
@@ -401,42 +408,63 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
                     controller: capacityController,
                     decoration: const InputDecoration(labelText: "Capacity"),
                     keyboardType: TextInputType.number,
+                    onChanged: (val) => setState(() {}),
                   ),
                   const SizedBox(height: 24),
-                  const Align(alignment: Alignment.centerLeft, child: Text("Occupant", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey))),
+                  const Align(alignment: Alignment.centerLeft, child: Text("Occupants", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey))),
                   const SizedBox(height: 8),
-                  InkWell(
-                    onTap: () async {
-                      final result = await _showStudentSearchSheet();
-                      if (result != null) setState(() => selectedStudent = result);
-                    },
-                    borderRadius: BorderRadius.circular(8),
+                  ...selectedStudents.map((student) => Padding(
+                    padding: const EdgeInsets.only(bottom: 8.0),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       decoration: BoxDecoration(
-                        border: Border.all(color: Colors.grey),
+                        border: Border.all(color: AppTheme.ecoTeal.withValues(alpha: 0.5)),
                         borderRadius: BorderRadius.circular(8),
+                        color: AppTheme.ecoTeal.withValues(alpha: 0.1),
                       ),
                       child: Row(
                         children: [
-                          Icon(selectedStudent == null ? Icons.person_add : Icons.person, color: selectedStudent == null ? Colors.grey : AppTheme.ecoTeal),
+                          const Icon(Icons.person, color: AppTheme.ecoTeal, size: 20),
                           const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              selectedStudent == null ? "Assign student..." : "${selectedStudent!['name']}",
-                              style: TextStyle(color: selectedStudent == null ? Colors.grey : Colors.white),
-                            ),
+                          Expanded(child: Text(student['name'] ?? 'Unknown', style: const TextStyle(color: Colors.white, fontSize: 14))),
+                          IconButton(
+                            icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent, size: 20),
+                            onPressed: () => setState(() => selectedStudents.remove(student)),
+                            constraints: const BoxConstraints(),
+                            padding: EdgeInsets.zero,
                           ),
-                          if (selectedStudent != null)
-                            IconButton(
-                              icon: const Icon(Icons.close, size: 18),
-                              onPressed: () => setState(() => selectedStudent = null),
-                              constraints: const BoxConstraints(),
-                            )
                         ],
                       ),
                     ),
-                  )
+                  )),
+                  if (selectedStudents.length < capacity)
+                    InkWell(
+                      onTap: () async {
+                        final result = await _showStudentSearchSheet();
+                        if (result != null) {
+                          if (!selectedStudents.any((s) => s['uid'] == result['uid'])) {
+                            setState(() => selectedStudents.add(result));
+                          }
+                        }
+                      },
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey, style: BorderStyle.none),
+                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.white12,
+                        ),
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.person_add, color: Colors.grey, size: 20),
+                            SizedBox(width: 12),
+                            Text("Assign student...", style: TextStyle(color: Colors.grey, fontSize: 14)),
+                          ],
+                        ),
+                      ),
+                    )
                 ],
               ),
             ),
@@ -447,9 +475,10 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
                   if (nameController.text.trim().isEmpty) return;
                   final roomData = {
                     'name': nameController.text.trim(),
-                    'capacity': int.tryParse(capacityController.text) ?? 1,
-                    'isOccupied': selectedStudent != null,
-                    'occupant': selectedStudent,
+                    'capacity': capacity,
+                    'isOccupied': selectedStudents.isNotEmpty,
+                    'occupants': selectedStudents,
+                    'occupant': selectedStudents.isNotEmpty ? selectedStudents.first : null, // Backwards compatibility
                   };
 
                   try {
@@ -461,21 +490,46 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
                     }
 
                     // Wipe assignment for displaced occupants.
-                    if (originalStudent != null && originalStudent['uid'] != selectedStudent?['uid']) {
-                      await _db.collection('users').doc(originalStudent['uid']).update({
-                        'assignedUnitId': FieldValue.delete(),
-                        'dormBlock': FieldValue.delete(),
-                        'updatedAt': FieldValue.serverTimestamp(),
-                      });
+                    final currentUids = selectedStudents.map((s) => s['uid']).toSet();
+                    for (var oldStudent in originalStudents) {
+                      if (!currentUids.contains(oldStudent['uid'])) {
+                        final String studentUid = oldStudent['uid'];
+                        await _db.collection('users').doc(studentUid).update({
+                          'assignedUnitId': FieldValue.delete(),
+                          'dormBlock': FieldValue.delete(),
+                          'assignedRoomName': FieldValue.delete(),
+                          'location.unit_id': FieldValue.delete(),
+                          'location.block_id': FieldValue.delete(),
+                          'location.room_name': FieldValue.delete(),
+                          'updatedAt': FieldValue.serverTimestamp(),
+                        });
+                        final apps = await _db.collection('users').doc(studentUid).collection('appliances').get();
+                        for (var appDoc in apps.docs) {
+                          await appDoc.reference.update({'location': 'General'});
+                        }
+                      }
                     }
 
-                    // Enforce assignment state for current occupant.
-                    if (selectedStudent != null) {
-                      await _db.collection('users').doc(selectedStudent!['uid']).update({
-                        'assignedUnitId': widget.unitId,
-                        'dormBlock': widget.blockName,
-                        'updatedAt': FieldValue.serverTimestamp(),
-                      });
+                    // Enforce assignment state for current occupants.
+                    for (var student in selectedStudents) {
+                      final String studentUid = student['uid'];
+                      final String roomName = nameController.text.trim();
+
+                      await _db.collection('users').doc(studentUid).update({
+                          'assignedUnitId': widget.unitId,
+                          'dormBlock': widget.blockId,
+                          'assignedRoomName': roomName,
+                          'location.unit_id': widget.unitId,
+                          'location.block_id': widget.blockId,
+                          'location.room_name': roomName,
+                          'updatedAt': FieldValue.serverTimestamp(),
+                        });
+
+                      // Sync all appliances for this student to their new room location.
+                      final apps = await _db.collection('users').doc(studentUid).collection('appliances').get();
+                      for (var appDoc in apps.docs) {
+                        await appDoc.reference.update({'location': roomName});
+                      }
                     }
 
                     if (context.mounted) Navigator.pop(context);

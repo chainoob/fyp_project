@@ -45,3 +45,26 @@ class WeatherService:
         except Exception as e:
             AppLog.error("WEATHER", f"API Request Failed: {str(e)}")
             return fallback
+
+    async def get_contextual_data_async(self, lat: float = 1.861706329851231, lon: float = 103.09867) -> dict:
+        import httpx
+        fallback = {"temperature": 28.0, "humidity": 80.0, "is_raining": False}
+        if not self.api_key:
+            return fallback
+        
+        try:
+            params = {"lat": lat, "lon": lon, "appid": self.api_key, "units": "metric"}
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self.base_url, params=params, timeout=3.0)
+                response.raise_for_status()
+                data = response.json()
+                
+                result = {
+                    "temperature": float(data["main"]["temp"]),
+                    "humidity": float(data["main"]["humidity"]),
+                    "is_raining": "rain" in data.get("weather", [{}])[0].get("main", "").lower()
+                }
+                return result
+        except Exception as e:
+            AppLog.error("WEATHER", f"Async API Request Failed: {str(e)}")
+            return fallback

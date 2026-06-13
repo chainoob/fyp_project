@@ -60,7 +60,17 @@ class _StaffShellState extends State<StaffShell> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _idx,
-        onDestinationSelected: (i) => setState(() => _idx = i),
+        onDestinationSelected: (i) {
+          setState(() => _idx = i);
+          if (i == 0) {
+            final now = DateTime.now();
+            context.read<EnergyProvider>().loadReport(
+              scope: 'Campus',
+              month: now.month,
+              year: now.year,
+            );
+          }
+        },
         backgroundColor: Colors.white,
         elevation: 3,
         indicatorColor: AppTheme.ecoTeal.withValues(alpha: 0.2),
@@ -124,6 +134,23 @@ class _StaffDashboardState extends State<StaffDashboard> {
             focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: Color(0xFF00E5FF))),
           ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("CANCEL", style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final double? val = double.tryParse(controller.text);
+              if (val != null) {
+                goalProvider.setGoal(val);
+                Navigator.pop(ctx);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E5FF)),
+            child: const Text("SAVE", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+          ),
+        ],
       ),
     );
   }

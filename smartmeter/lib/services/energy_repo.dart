@@ -38,6 +38,7 @@ abstract class EnergyRepository {
   Future<void> saveFcmToken(String uid, String token);
   Stream<Map<String, dynamic>> getCampusGoalStream();
   Future<void> updateCampusGoal(double newGoal);
+  Future<void> saveManualOverrides(String uid, Map<String, double?> overrides);
 
   Future<List<Map<String, dynamic>>> fetchBlocks();
   Future<List<Map<String, dynamic>>> fetchUnits(String blockId);
@@ -70,11 +71,10 @@ class FirestoreRepository implements EnergyRepository {
 
   @override
   Stream<Users?> get authStateChanges {
-    return _auth.authStateChanges().asyncMap((firebaseUser) async {
-      if (firebaseUser == null) return null;
+    return _auth.authStateChanges().asyncExpand((firebaseUser) {
+      if (firebaseUser == null) return Stream.value(null);
 
-      try {
-        final doc = await _db.collection('users').doc(firebaseUser.uid).get();
+      return _db.collection('users').doc(firebaseUser.uid).snapshots().map((doc) {
         if (doc.exists) return Users.fromFirestore(doc);
 
         return Users(
@@ -83,10 +83,7 @@ class FirestoreRepository implements EnergyRepository {
           name: firebaseUser.displayName ?? 'User',
           role: 'student',
         );
-      } catch (e, stack) {
-        AppLog.error('Auth State Mapping', e, stack);
-        return null;
-      }
+      });
     });
   }
 
@@ -220,36 +217,33 @@ class FirestoreRepository implements EnergyRepository {
     required int year,
     String? blockId,
   }) async {
-    if (scope.toLowerCase().contains('campus')) {
-      final url = Uri.parse('$_baseUrl/api/v1/admin/aggregations');
-      
-      final User? user = _auth.currentUser;
-      if (user == null) throw Exception("User authorization missing.");
-      
-      final String? idToken = await user.getIdToken();
+    final url = Uri.parse('$_baseUrl/api/v1/admin/aggregations');
+    
+    final User? user = _auth.currentUser;
+    if (user == null) throw Exception("User authorization missing.");
+    
+    final String? idToken = await user.getIdToken();
 
-      final response = await http.post(
-        url,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $idToken',
-        },
-        body: jsonEncode({
-          'month': month,
-          'year': year,
-        }),
-      );
+    final response = await http.post(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $idToken',
+      },
+      body: jsonEncode({
+        'month': month,
+        'year': year,
+        'blockId': blockId,
+      }),
+    );
 
-      if (response.statusCode != 200) {
-        try {
-          final Map<String, dynamic> errorData = jsonDecode(response.body);
-          throw Exception(errorData['message'] ?? errorData['detail'] ?? "Server Rejection: ${response.statusCode}");
-        } catch (_) {
-          throw Exception("Aggregation API rejected payload status code: ${response.statusCode}");
-        }
+    if (response.statusCode != 200) {
+      try {
+        final Map<String, dynamic> errorData = jsonDecode(response.body);
+        throw Exception(errorData['message'] ?? errorData['detail'] ?? "Server Rejection: ${response.statusCode}");
+      } catch (_) {
+        throw Exception("Aggregation API rejected payload status code: ${response.statusCode}");
       }
-    } else {
-      throw Exception("Block-level macro-aggregation must execute via backend API. Local Dart processing is permanently disabled.");
     }
   }
 
@@ -338,6 +332,14 @@ class FirestoreRepository implements EnergyRepository {
       await _db.collection('campus').doc('config').set({'monthlyGoal': newGoal}, SetOptions(merge: true));
 
   @override
+  Future<void> saveManualOverrides(String uid, Map<String, double?> overrides) async {
+    await _db.collection('users').doc(uid).update({
+      'manualOverrides': overrides,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  @override
   Future<List<Map<String, dynamic>>> fetchBlocks() async {
     final snap = await _db.collection('blocks').orderBy('name').get();
     return snap.docs.map((d) => {'id': d.id, 'name': d['name'] ?? 'Unknown'}).toList();
@@ -358,64 +360,143 @@ class FirestoreRepository implements EnergyRepository {
     required int year,
   }) async {
     try {
-      final lookupKey = unitId ?? blockId ?? 'aggregate';
+      final String lookupKey = unitId ?? blockId ?? 'aggregate';
+      final String monthId = "$year-${month.toString().padLeft(2, '0')}";
 
-      final currentSnapshot = await _db.collection('disaggregation_results')
-          .where('userId', isEqualTo: lookupKey)
-          .where('month', isEqualTo: month)
-          .where('year', isEqualTo: year)
-          .limit(1)
+      final DocumentSnapshot currentDoc = await _db.collection('users')
+          .doc(lookupKey)
+          .collection('billing_cycles')
+          .doc(monthId)
           .get();
 
-      if (currentSnapshot.docs.isEmpty) {
-        throw Exception("Analysis data unavailable for $lookupKey ($month/$year). Awaiting staff bill submission.");
+      if (!currentDoc.exists) {
+        throw Exception("Analysis data unavailable for $lookupKey ($month/$year). Awaiting tenant bill submission.");
+      }
+
+      final Map<String, dynamic> currentDataMap = Map<String, dynamic>.from(currentDoc.data() as Map? ?? {});
+      final double totalKwh = (currentDataMap['total_consumption_kwh'] as num?)?.toDouble() ?? 0.0;
+      final List<String> anomalies = List<String>.from(currentDataMap['anomalies'] ?? <String>[]);
+
+      final QuerySnapshot dailySnapshot = await _db.collection('users')
+          .doc(lookupKey)
+          .collection('billing_cycles')
+          .doc(monthId)
+          .collection('daily_disaggregations')
+          .get();
+
+      final Map<String, double> applianceBreakdown = {};
+      final Map<int, double> hourlyUsage = {};
+      final List<DailyUsagePoint> usageTrend = [];
+
+      for (final QueryDocumentSnapshot doc in dailySnapshot.docs) {
+        final Map<String, dynamic> dailyData = Map<String, dynamic>.from(doc.data() as Map? ?? {});
+        
+        final List<String> docIdParts = doc.id.split('-');
+        final int day = docIdParts.length == 3 ? (int.tryParse(docIdParts[2]) ?? 1) : 1;
+
+        final Map<String, dynamic> dailyBreakdown = Map<String, dynamic>.from(dailyData['appliance_breakdown'] as Map? ?? {});
+        double dailyTotal = 0.0;
+        dailyBreakdown.forEach((key, val) {
+          final double valDouble = (val as num?)?.toDouble() ?? 0.0;
+          applianceBreakdown[key] = (applianceBreakdown[key] ?? 0.0) + valDouble;
+          dailyTotal += valDouble;
+        });
+
+        final Map<String, dynamic> dailyHourly = Map<String, dynamic>.from(dailyData['hourly_usage'] as Map? ?? {});
+        dailyHourly.forEach((key, val) {
+          final int hour = int.tryParse(key) ?? 0;
+          final double valDouble = (val as num?)?.toDouble() ?? 0.0;
+          hourlyUsage[hour] = (hourlyUsage[hour] ?? 0.0) + valDouble;
+        });
+
+        usageTrend.add(DailyUsagePoint(day, dailyTotal));
       }
       
-      final currentDoc = currentSnapshot.docs.first;
-      final currentData = EnergyReportData.fromFirestore(currentDoc);
+      usageTrend.sort((a, b) => a.day.compareTo(b.day));
 
-      int prevMonth = month == 1 ? 12 : month - 1;
-      int prevYear = month == 1 ? year - 1 : year;
-      
-      final prevSnapshot = await _db.collection('disaggregation_results')
-          .where('userId', isEqualTo: lookupKey)
-          .where('month', isEqualTo: prevMonth)
-          .where('year', isEqualTo: prevYear)
-          .limit(1)
-          .get();
+      // Dynamically compute benchmark breakdown if not stored
+      final Map<String, double> benchmarkBreakdown = currentDataMap.containsKey('benchmark_breakdown')
+          ? Map<String, double>.from(
+              (currentDataMap['benchmark_breakdown'] ?? {}).map(
+                (key, value) => MapEntry(key.toString(), (value as num?)?.toDouble() ?? 0.0),
+              ),
+            )
+          : applianceBreakdown.map((key, value) => MapEntry(key, value * 0.9));
 
-      double comparisonPercent = 0.0;
-      if (prevSnapshot.docs.isNotEmpty) {
-        final prevData = EnergyReportData.fromFirestore(prevSnapshot.docs.first);
-        if (prevData.summary.totalConsumption > 0) {
-          comparisonPercent = ((currentData.summary.totalConsumption - prevData.summary.totalConsumption) / prevData.summary.totalConsumption) * 100;
+      // Dynamically compute recommendations if not stored
+      final List<String> recommendations = currentDataMap.containsKey('recommendations')
+          ? List<String>.from(currentDataMap['recommendations'] ?? [])
+          : <String>[];
+          
+      if (recommendations.isEmpty) {
+        applianceBreakdown.forEach((app, val) {
+          final double percentage = totalKwh > 0 ? (val / totalKwh) * 100 : 0.0;
+          if (percentage > 40.0) {
+            recommendations.add("High Consumption: $app accounts for ${percentage.toStringAsFixed(1)}% of usage.");
+          }
+        });
+        if (recommendations.isEmpty) {
+          recommendations.add("Usage patterns are within optimal ranges.");
         }
       }
 
+      // Calculate previous month comparison
+      final int prevMonth = month == 1 ? 12 : month - 1;
+      final int prevYear = month == 1 ? year - 1 : year;
+      final String prevMonthId = "$prevYear-${prevMonth.toString().padLeft(2, '0')}";
+      
+      final DocumentSnapshot prevDoc = await _db.collection('users')
+          .doc(lookupKey)
+          .collection('billing_cycles')
+          .doc(prevMonthId)
+          .get();
+
+      double comparisonPercent = 0.0;
+      if (prevDoc.exists) {
+        final Map<String, dynamic> prevDataMap = Map<String, dynamic>.from(prevDoc.data() as Map? ?? {});
+        final double prevKwh = (prevDataMap['total_consumption_kwh'] as num?)?.toDouble() ?? 0.0;
+        if (prevKwh > 0) {
+          comparisonPercent = ((totalKwh - prevKwh) / prevKwh) * 100;
+        }
+      }
+
+      double peakKwh = 0.0;
+      String peakTime = "00:00";
+      hourlyUsage.forEach((hour, usage) {
+        if (usage > peakKwh) {
+          peakKwh = usage;
+          peakTime = "${hour.toString().padLeft(2, '0')}:00";
+        }
+      });
+
+      final double totalCost = ReportSummary.calculateMalaysianTariffA(totalKwh);
+      final double carbonFootprint = totalKwh * 0.5;
+      final String keyIssue = recommendations.isNotEmpty ? recommendations.first : "Consumption nominal.";
+
       return EnergyReportData(
-        id: currentData.id,
+        id: currentDoc.id,
         summary: ReportSummary(
-          totalConsumption: currentData.summary.totalConsumption,
+          totalConsumption: totalKwh,
           comparisonPercent: comparisonPercent,
-          totalCost: currentData.summary.totalCost,
-          keyIssue: currentData.summary.keyIssue,
-          recommendations: currentData.summary.recommendations,
+          totalCost: totalCost,
+          keyIssue: keyIssue,
+          recommendations: recommendations,
         ),
         kpis: ReportKPIs(
-          totalKwh: currentData.kpis.totalKwh,
-          dailyAvgKwh: currentData.kpis.dailyAvgKwh,
-          peakKwh: currentData.kpis.peakKwh,
-          peakTime: currentData.kpis.peakTime,
-          totalCost: currentData.kpis.totalCost,
+          totalKwh: totalKwh,
+          dailyAvgKwh: totalKwh / 30,
+          peakKwh: peakKwh,
+          peakTime: peakTime,
+          totalCost: totalCost,
           changePercent: comparisonPercent,
         ),
-        carbonFootprint: currentData.carbonFootprint,
-        usageTrend: currentData.usageTrend,
-        applianceBreakdown: currentData.applianceBreakdown,
-        benchmarkBreakdown: currentData.benchmarkBreakdown,
-        anomalies: currentData.anomalies,
-        hourlyUsage: currentData.hourlyUsage,
-        costBreakdown: currentData.costBreakdown,
+        carbonFootprint: carbonFootprint,
+        usageTrend: usageTrend,
+        applianceBreakdown: applianceBreakdown,
+        benchmarkBreakdown: benchmarkBreakdown,
+        anomalies: anomalies,
+        hourlyUsage: hourlyUsage,
+        costBreakdown: const <String, double>{},
       );
     } catch (e) {
       rethrow;

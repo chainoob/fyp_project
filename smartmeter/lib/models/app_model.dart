@@ -8,6 +8,7 @@ class Users {
   final String? studentId;
   final String? dormBlock;
   final String? assignedUnitId;
+  final String? assignedRoomName;
   final String? photoUrl;
 
   const Users({
@@ -18,20 +19,33 @@ class Users {
     this.studentId,
     this.dormBlock,
     this.assignedUnitId,
+    this.assignedRoomName,
     this.photoUrl
   });
 
   factory Users.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+    final Map<String, dynamic> data = Map<String, dynamic>.from(doc.data() as Map? ?? {});
+    
+    final Map<String, dynamic> profile = data['profile'] is Map ? Map<String, dynamic>.from(data['profile'] as Map) : const <String, dynamic>{};
+    final Map<String, dynamic> location = data['location'] is Map ? Map<String, dynamic>.from(data['location'] as Map) : const <String, dynamic>{};
+
+    final String name = profile['name']?.toString() ?? data['displayName']?.toString() ?? 'Unknown';
+    final String role = profile['role']?.toString().toLowerCase() ?? data['role']?.toString() ?? 'student';
+    final String? studentId = profile['studentId']?.toString() ?? data['studentId']?.toString();
+    final String? dormBlock = location['block_id']?.toString() ?? data['dormBlock']?.toString();
+    final String? assignedUnitId = location['unit_id']?.toString() ?? data['assignedUnitId']?.toString();
+    final String? assignedRoomName = location['room_name']?.toString() ?? data['assignedRoomName']?.toString();
+
     return Users(
       uid: doc.id,
-      name: data['displayName'] ?? 'Unknown',
-      email: data['email'] ?? '',
-      role: data['role'] ?? 'student',
-      studentId: data['studentId'],
-      dormBlock: data['dormBlock'],
-      assignedUnitId: data['assignedUnitId'],
-      photoUrl: data['photoUrl']
+      name: name,
+      email: data['email']?.toString() ?? '',
+      role: role,
+      studentId: studentId,
+      dormBlock: dormBlock,
+      assignedUnitId: assignedUnitId,
+      assignedRoomName: assignedRoomName,
+      photoUrl: data['photoUrl']?.toString()
     );
   }
 
@@ -43,6 +57,7 @@ class Users {
       'studentId': studentId,
       'dormBlock': dormBlock,
       'assignedUnitId': assignedUnitId,
+      'assignedRoomName': assignedRoomName,
       'photoUrl': photoUrl,
       'updatedAt': FieldValue.serverTimestamp(),
     };
@@ -251,6 +266,17 @@ class ReportSummary {
     required this.recommendations,
   });
 
+  static double calculateMalaysianTariffA(double currentKwh) {
+    double block1 = currentKwh > 200 ? 200 : currentKwh;
+    double block2 = currentKwh > 200 ? (currentKwh > 300 ? 100 : currentKwh - 200) : 0;
+    double block3 = currentKwh > 300 ? (currentKwh > 600 ? 300 : currentKwh - 300) : 0;
+
+    double cost1 = block1 * 0.218;
+    double cost2 = block2 * 0.334;
+    double cost3 = block3 * 0.516;
+    return cost1 + cost2 + cost3;
+  }
+
   factory ReportSummary.fromMap(Map<String, dynamic> map) {
     return ReportSummary(
       totalConsumption: (map['totalConsumption'] as num?)?.toDouble() ?? 0.0,
@@ -313,6 +339,7 @@ class ForecastResponse {
   final double projectedAddition;
   final double estimatedEndOfMonthTotal;
   final String methodApplied;
+  final Map<int, double> mcmcHourlyProfile;
 
   ForecastResponse({
     required this.userId,
@@ -322,9 +349,19 @@ class ForecastResponse {
     required this.projectedAddition,
     required this.estimatedEndOfMonthTotal,
     required this.methodApplied,
+    required this.mcmcHourlyProfile,
   });
 
   factory ForecastResponse.fromJson(Map<String, dynamic> json) {
+    Map<int, double> parsedHourly = {};
+    if (json['mcmc_hourly_profile'] is Map) {
+      final map = json['mcmc_hourly_profile'] as Map;
+      map.forEach((key, value) {
+        final parsedKey = int.tryParse(key.toString()) ?? 0;
+        parsedHourly[parsedKey] = (value as num).toDouble();
+      });
+    }
+
     return ForecastResponse(
       userId: json['userId'] ?? '',
       targetMonth: json['targetMonth'] ?? 0,
@@ -333,6 +370,7 @@ class ForecastResponse {
       projectedAddition: (json['projectedAddition'] ?? 0.0).toDouble(),
       estimatedEndOfMonthTotal: (json['estimatedEndOfMonthTotal'] ?? 0.0).toDouble(),
       methodApplied: json['methodApplied'] ?? 'unknown',
+      mcmcHourlyProfile: parsedHourly,
     );
   }
 }

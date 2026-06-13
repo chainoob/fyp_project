@@ -21,6 +21,7 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
 
   String? _selectedBlockId;
   String? _selectedUnitId;
+  final TextEditingController _billController = TextEditingController();
 
   final List<String> _scopes = ['Campus', 'Block', 'Unit'];
   final List<int> _months = List.generate(12, (index) => index + 1);
@@ -32,6 +33,12 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<ReportProvider>().loadInitialData();
     });
+  }
+
+  @override
+  void dispose() {
+    _billController.dispose();
+    super.dispose();
   }
 
   Future<void> _handleGenerateReport() async {
@@ -109,15 +116,21 @@ class _StaffReportsPageState extends State<StaffReportsPage> {
                 if (_selectedScope != 'Campus')
                   DropdownButtonFormField<String>(
                     initialValue: _selectedBlockId,
-                    decoration: _inputDecor("Select Block", Icons.apartment),
+                    decoration: _inputDecor(
+                      _selectedUnitId != null ? "Block (Locked)" : "Select Block", 
+                      Icons.apartment
+                    ),
                     dropdownColor: AppTheme.surface,
-                    style: const TextStyle(color: Colors.white),
+                    style: TextStyle(color: _selectedUnitId != null ? Colors.grey : Colors.white),
                     items: reportProvider.blocks.map((b) => DropdownMenuItem(
                       value: b['id'] as String,
                       child: Text(b['name']),
                     )).toList(),
-                    onChanged: (val) {
-                      setState(() => _selectedBlockId = val);
+                    onChanged: _selectedUnitId != null ? null : (val) {
+                      setState(() {
+                        _selectedBlockId = val;
+                        _selectedUnitId = null;
+                      });
                       if (val != null) {
                         reportProvider.loadUnitsForBlock(val);
                       }
@@ -238,6 +251,9 @@ class GeneratedReportScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // UNIFIED CALCULATION: Cost derived once at the top of the build scope.
+    final double calculatedCost = ReportSummary.calculateMalaysianTariffA(data.kpis.totalKwh);
+
     return Scaffold(
       appBar: AppBar(
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -260,7 +276,7 @@ class GeneratedReportScreen extends StatelessWidget {
                 children: [
                   _buildSummaryRow("Total Consumption", "${data.summary.totalConsumption.toStringAsFixed(0)} kWh"),
                   _buildSummaryRow("Vs Last Month", "${data.summary.comparisonPercent > 0 ? '+' : ''}${data.summary.comparisonPercent.toStringAsFixed(1)}%", isTrend: true),
-                  _buildSummaryRow("Total Cost", "RM ${data.summary.totalCost.toStringAsFixed(2)}"),
+                  _buildSummaryRow("Total Cost", "RM ${calculatedCost.toStringAsFixed(2)}"),
                   const Divider(height: 24),
                   const Text("Key Issue:", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
                   Text(data.summary.keyIssue.isEmpty ? "No operational anomalies identified." : data.summary.keyIssue, style: const TextStyle(fontSize: 13)),
@@ -300,7 +316,7 @@ class GeneratedReportScreen extends StatelessWidget {
               _buildKpiCard("Total Energy", "${data.kpis.totalKwh.toStringAsFixed(0)} kWh", Icons.flash_on, Colors.blue),
               _buildKpiCard("Daily Average", "${data.kpis.dailyAvgKwh.toStringAsFixed(1)} kWh", Icons.calendar_view_day, Colors.orange),
               _buildKpiCard("Peak Usage", "${data.kpis.peakKwh.toStringAsFixed(1)} kW", Icons.trending_up, Colors.red),
-              _buildKpiCard("Total Cost", "RM ${data.kpis.totalCost.toStringAsFixed(0)}", Icons.attach_money, Colors.green),
+              _buildKpiCard("Total Cost", "RM ${calculatedCost.toStringAsFixed(0)}", Icons.attach_money, Colors.green),
             ],
           ),
 
@@ -441,14 +457,13 @@ class GeneratedReportScreen extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text("RM ${data.kpis.totalCost.toStringAsFixed(2)}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 24, color: Colors.black)),
+                    Text("RM ${calculatedCost.toStringAsFixed(2)}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 24, color: Colors.black)),
                     const Text("Estimated Monthly Cost", style: TextStyle(fontSize: 12, color: Colors.grey)),
                   ],
                 ),
               ],
             ),
           ),
-
           const SizedBox(height: 40),
           const Center(child: Text("Generated by SmartMeter System", style: TextStyle(color: Colors.grey, fontSize: 10))),
           const SizedBox(height: 20),

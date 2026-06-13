@@ -10,5 +10,8 @@ google-cloud-secret-manager>=2.20.0
 pydantic==2.9.2
 firebase-admin==6.5.0
 python-dateutil==2.9.0.post0
+httpx>=0.27.0
 deap==1.4.1
 tables>=3.10.1
+google-cloud-vision==3.9.0
+python-multipart==0.0.9

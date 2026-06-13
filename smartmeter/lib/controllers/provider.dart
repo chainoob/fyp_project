@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:smartmeter/models/app_model.dart';
 import 'package:smartmeter/services/api_service.dart';
 import 'package:smartmeter/services/energy_repo.dart';
@@ -18,20 +19,23 @@ class AppAuthProvider extends ChangeNotifier {
   bool _isLoading = false;
 
   AppAuthProvider(this._repo) {
-    _repo.authStateChanges.listen((user) {
+    _repo.authStateChanges.listen((user) async {
       _currentUser = user;
       if (user != null) {
-        fetchUserRole();
+        // Sync role directly from the user object emitted by the reactive stream
+        _role = user.role; 
         initFcm();
+      } else {
+        _role = null;
       }
       notifyListeners();
-    });
+    }, onError: (e) => AppLog.error("Auth State Listener Failure", e));
   }
 
   Users? get currentUser => _currentUser;
   GoogleSignInAccount? get pendingGoogleUser => _pendingGoogleUser;
   bool get loggedIn => _currentUser != null;
-  bool get isStaff => _role == 'staff';
+  bool get isStaff => (_role ?? _currentUser?.role) == 'staff';
   bool get isLoading => _isLoading;
 
   Future<void> initFcm() async {
@@ -120,7 +124,12 @@ class AppAuthProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> signOut() async {
+  Future<void> signOut(BuildContext context) async {
+    // Graceful stream termination across all active providers
+    context.read<ApplianceProvider>().clear();
+    context.read<GoalProvider>().clear();
+    context.read<EnergyProvider>().clear();
+
     await _repo.signOut();
     _role = null;
     notifyListeners();
@@ -205,7 +214,7 @@ class ApplianceProvider extends ChangeNotifier {
     _streamSub = _repo.getAppliancesStream(userId).listen((data) {
       _appliances = data;
       notifyListeners();
-    });
+    }, onError: (e) => AppLog.error("Appliance Stream Failure", e));
   }
 
   void subscribeToQueue() {
@@ -213,7 +222,14 @@ class ApplianceProvider extends ChangeNotifier {
     _streamSub = _repo.getPendingVerificationStream().listen((data) {
       _pendingQueue = data;
       notifyListeners();
-    });
+    }, onError: (e) => AppLog.error("Verification Stream Failure", e));
+  }
+
+  void clear() {
+    _streamSub?.cancel();
+    _appliances = [];
+    _pendingQueue = [];
+    notifyListeners();
   }
 
   Future<void> add(String name, String type, int watts, String room) async {
@@ -319,7 +335,7 @@ class GoalProvider with ChangeNotifier {
       _target = (data['energyGoal'] ?? 0).toDouble();
       _current = (data['currentUsage'] ?? 0).toDouble();
       notifyListeners();
-    });
+    }, onError: (e) => AppLog.error("Student Goal Stream Failure", e));
   }
 
   void subscribeToCampus() {
@@ -331,7 +347,15 @@ class GoalProvider with ChangeNotifier {
       _target = (data['monthlyGoal'] ?? 5000).toDouble(); 
       _current = (data['totalUsage'] ?? 0).toDouble();
       notifyListeners();
-    });
+    }, onError: (e) => AppLog.error("Campus Goal Stream Failure", e));
+  }
+
+  void clear() {
+    _sub?.cancel();
+    _target = 0;
+    _current = 0;
+    _currentUserId = null;
+    notifyListeners();
   }
 
   Future<void> setGoal(double newGoal) async {
@@ -485,7 +509,16 @@ class EnergyProvider extends ChangeNotifier {
   Map<String, double> get applianceBreakdown => currentReport?.applianceBreakdown ?? {};
 
   void updateManualOverride(String applianceName, bool isOn) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
     manualOverrides[applianceName] = isOn ? 1.0 : 0.0;
+    if (uid != null) {
+      _repository.saveManualOverrides(uid, manualOverrides);
+    }
+    notifyListeners();
+  }
+
+  void syncManualOverrides(Map<String, double?> overrides) {
+    manualOverrides = Map<String, double?>.from(overrides);
     notifyListeners();
   }
 
@@ -510,7 +543,9 @@ class EnergyProvider extends ChangeNotifier {
       );
     } catch (e) {
       final errorStr = e.toString();
-      if (errorStr.contains("Analysis data unavailable") || errorStr.contains("Awaiting staff bill submission")) {
+      if (errorStr.contains("Analysis data unavailable") || 
+          errorStr.contains("Awaiting staff bill submission") ||
+          errorStr.contains("No unit data found")) {
         errorMessage = null;
       } else {
         errorMessage = errorStr;
@@ -530,6 +565,7 @@ class EnergyProvider extends ChangeNotifier {
     required int month,
     required int year,
     String? telemetrySourceId, 
+    String? blockId,
   }) async {
     isProcessingAI = true;
     errorMessage = null;
@@ -544,6 +580,7 @@ class EnergyProvider extends ChangeNotifier {
         'year': year,  
         'scope': scope,
         'trainModel': false, 
+        'blockId': blockId,
       };
 
       _asyncPipelineSub?.cancel(); 
@@ -586,6 +623,13 @@ class EnergyProvider extends ChangeNotifier {
       AppLog.error("Feedback Loop Failure", e, stack);
       rethrow;
     }
+  }
+
+  void clear() {
+    _asyncPipelineSub?.cancel();
+    currentReport = null;
+    manualOverrides = {};
+    notifyListeners();
   }
 
   @override

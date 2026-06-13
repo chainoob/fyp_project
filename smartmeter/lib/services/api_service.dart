@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:smartmeter/models/app_model.dart';
@@ -88,7 +89,7 @@ class ApiService {
     }
   }
 
- Future<ForecastResponse?> getEnergyForecast(String userId, int month, int year) async {
+  Future<ForecastResponse?> getEnergyForecast(String userId, int month, int year) async {
     final Uri url = Uri.parse('$_baseUrl/api/v1/forecasts');
     
     final User? user = FirebaseAuth.instance.currentUser;
@@ -106,33 +107,44 @@ class ApiService {
           'user_id': userId,
           'target_month': month,
           'target_year': year,
-          'days_to_predict': 30
+          'days_to_predict': 30,
+          // MUST MATCH Python Pydantic key: 'manual_overrides'
+          'manual_overrides': {}, 
         }),
       ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
         final Map<String, dynamic> decoded = jsonDecode(response.body);
-        
-        // Strip arbitrary backend wrappers
         final Map<String, dynamic> payload = decoded.containsKey('data') ? decoded['data'] : decoded;
 
-        final double projectedTotal = double.tryParse(payload['total_projected_kwh']?.toString() ?? '0') ?? 
-                                      double.tryParse(payload['estimatedEndOfMonthTotal']?.toString() ?? '0') ?? 0.0;
-
-        // Force successful object construction to bypass UI fallback
-        return ForecastResponse(
-          userId: userId,
-          targetMonth: month,
-          targetYear: year,
-          currentConsumption: double.tryParse(payload['currentConsumption']?.toString() ?? '0') ?? 0.0,
-          projectedAddition: double.tryParse(payload['projectedAddition']?.toString() ?? '0') ?? 0.0,
-          estimatedEndOfMonthTotal: projectedTotal,
-          methodApplied: payload['methodApplied']?.toString() ?? 'MCMC API Resolved',
-        );
+        return ForecastResponse.fromJson(payload);
+      } else {
+        // Expose server errors (e.g., 400 Bad Request) instead of returning null
+        throw Exception('Server rejected request: ${response.statusCode} - ${response.body}');
       }
-      return null;
     } catch (e) {
-      return null; // Suppress fatal crash; UI will retry on reload
+      rethrow; 
+    }
+  }
+
+  Future<Map<String, dynamic>> identifyAppliance(File imageFile) async {
+    final Uri url = Uri.parse('$_baseUrl/api/v1/recognize-appliance');
+    
+    final User? user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw Exception("User authorization missing.");
+    final String? idToken = await user.getIdToken();
+
+    final request = http.MultipartRequest('POST', url)
+      ..headers['Authorization'] = 'Bearer $idToken'
+      ..files.add(await http.MultipartFile.fromPath('file', imageFile.path));
+    
+    final response = await request.send().timeout(const Duration(seconds: 15));
+    
+    if (response.statusCode == 200) {
+      final responseData = await response.stream.bytesToString();
+      return json.decode(responseData);
+    } else {
+      throw Exception("Vision API network failure: Code ${response.statusCode}");
     }
   }
 }

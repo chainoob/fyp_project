@@ -46,6 +46,7 @@ class _BillSubmissionCardState extends State<BillSubmissionCard> {
         month: widget.month ?? DateTime.now().month,
         year: widget.year ?? DateTime.now().year,
         telemetrySourceId: widget.telemetrySourceId,
+        blockId: widget.blockId,
       );
 
       if (mounted) {

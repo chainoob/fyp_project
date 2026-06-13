@@ -5,7 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../config/theme.dart';
 import '../../controllers/provider.dart';
-import '../../services/classifier_service.dart'; // Ensure correct structural path match
+import '../../services/api_service.dart'; 
 
 class AddApplianceScreen extends StatefulWidget {
   final String userId;
@@ -39,16 +39,13 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
   bool _isProcessing = false;
   final ImagePicker _picker = ImagePicker();
   
-  // Instantiate ClassifierService for image-based device identification.
-  final ClassifierService _classifierService = ClassifierService();
+  String? _lastRoom;
 
   @override
   void dispose() {
     _nameCtrl.dispose();
     _wattCtrl.dispose();
     _roomCtrl.dispose();
-    // Release tflite interpreter memory.
-    _classifierService.dispose();
     super.dispose();
   }
 
@@ -77,31 +74,74 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
 
   Future<void> _processImage(File image) async {
     try {
-      // Execute inference channel for image classification.
-      final String? detectedLabel = await _classifierService.classifyDeviceImage(image);
+      // Execute Cloud Vision API payload
+      final result = await ApiService().identifyAppliance(image);
       
-      // Handle null inference results with fallback routing.
-      _applyAiResults(detectedLabel ?? "Prohibited/Unknown Asset");
+      if (result['success'] == true) {
+        final String detected = result['appliance'];
+        setState(() {
+          _selectedType = detected;
+        });
+        _showSnackBar("AI Detected: $detected", isError: false);
+      } else {
+        // Fallback Tier 1: Trigger Manual Override
+        List<String> topGuesses = [];
+        if (result['top_guesses'] != null) {
+          topGuesses = List<String>.from(result['top_guesses']);
+        }
+        _showTier1Fallback(topGuesses);
+      }
     } catch (e) {
-      debugPrint("Classification Processing Mismatch Exception: $e");
-      _applyAiResults("Prohibited/Unknown Asset");
+      debugPrint("Vision API Pipeline Exception: $e");
+      _showTier1Fallback([]);
     }
   }
 
-  void _applyAiResults(String label) {
-    String formattedLabel = label.isNotEmpty
-        ? label[0].toUpperCase() + label.substring(1).toLowerCase()
-        : '';
-
-    setState(() {
-      if (_allowedTypes.contains(formattedLabel)) {
-        _selectedType = formattedLabel;
-        _showSnackBar("AI Detected: $formattedLabel", isError: false);
-      } else {
-        _selectedType = null;
-        _showSnackBar("Detected item is prohibited or unrecognized under current hostel policy.", isError: true);
-      }
-    });
+  void _showTier1Fallback(List<String> hints) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text("Identification Confidence Low", 
+              style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 16),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            const Text("Please select your appliance manually from the approved list:", 
+              style: TextStyle(fontSize: 14),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              alignment: WrapAlignment.center,
+              children: _allowedTypes.map((app) => 
+                ActionChip(
+                  label: Text(app),
+                  backgroundColor: AppTheme.surface,
+                  onPressed: () {
+                    setState(() {
+                      _selectedType = app;
+                    });
+                    Navigator.pop(ctx);
+                    _showSnackBar("Manually selected: $app");
+                  }
+                )
+              ).toList(),
+            )
+          ]
+        )
+      )
+    );
   }
 
   Future<void> _submit() async {
@@ -146,6 +186,18 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final user = context.watch<AppAuthProvider>().currentUser;
+    if (user != null && user.assignedRoomName != _lastRoom) {
+       _lastRoom = user.assignedRoomName;
+       WidgetsBinding.instance.addPostFrameCallback((_) {
+         if (mounted) {
+           setState(() {
+             _roomCtrl.text = _lastRoom ?? "";
+           });
+         }
+       });
+    }
+
     return Scaffold(
       appBar: AppBar(title: const Text("Register Device")),
       body: SingleChildScrollView(

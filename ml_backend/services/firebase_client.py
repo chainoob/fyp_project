@@ -18,9 +18,15 @@ class FirebaseClient:
         if not firebase_admin._apps:
             if os.getenv("K_SERVICE"):
                 firebase_admin.initialize_app() 
-            else:
+            elif os.path.exists("serviceAccountKey.json"):
                 cred = credentials.Certificate("serviceAccountKey.json")
                 firebase_admin.initialize_app(cred)
+            else:
+                try:
+                    cred = credentials.ApplicationDefault()
+                    firebase_admin.initialize_app(cred)
+                except Exception:
+                    firebase_admin.initialize_app()
                 
         self.db = firestore.client()
 
@@ -70,6 +76,17 @@ class FirebaseClient:
                     AppLog.error("FIREBASE_INIT", "No valid credentials found. Deployment likely misconfigured.")
                     raise RuntimeError("No valid Firebase credentials found.")
 
+    async def get_system_config(self):
+        try:
+            AppLog.info("FIRESTORE_READ", "Fetching system_config document.")
+            doc = self.db.collection('system').document('config').get()
+            if doc.exists:
+                return doc.to_dict()
+            return {"mcmc_enabled": True}
+        except Exception as e:
+            AppLog.error("FIRESTORE_READ", f"Failed to fetch system config: {str(e)}")
+            return {"mcmc_enabled": True}
+
     async def get_user_appliances(self, user_id: str):
         try:
             AppLog.info("FIRESTORE_READ", f"Fetching active appliances for user: {user_id}")
@@ -111,7 +128,7 @@ class FirebaseClient:
             return data.item() if hasattr(data, 'item') else float(data)
         return data
 
-    async def save_disaggregation_result(self, payload: dict):
+    async def save_disaggregation_result(self, payload: dict) -> None:
         try:
             user_id = payload.get('userId')
             month = payload.get('month')
@@ -124,8 +141,59 @@ class FirebaseClient:
             if 'timestamp' in cleaned_payload and not isinstance(cleaned_payload['timestamp'], (datetime.datetime, str)):
                 cleaned_payload['timestamp'] = gcp_firestore.SERVER_TIMESTAMP
 
+            # Legacy Write
             self.db.collection('disaggregation_results').document(doc_id).set(cleaned_payload)
-            AppLog.info("FIRESTORE_SAVE", f"SUCCESS: Result persisted with deterministic ID: {doc_id}")
+            AppLog.info("FIRESTORE_SAVE", f"SUCCESS: Legacy result persisted: {doc_id}")
+
+            # Partitioned Hierarchical Write (Dual Write)
+            month_id = f"{year}-{month:02d}"
+            now = datetime.datetime.now(datetime.timezone.utc)
+            day_id = now.strftime("%Y-%m-%d")
+            
+            user_ref = self.db.collection('users').document(user_id)
+            
+            # 1. Update User Metrics Domain (Segregated Schema)
+            user_ref.set({
+                "metrics": {
+                    "lifetime_kwh": gcp_firestore.Increment(cleaned_payload.get('estimated_load', 0.0)),
+                    "last_aggregate_update": gcp_firestore.SERVER_TIMESTAMP
+                }
+            }, merge=True)
+
+            # 2. Update Monthly Summary Partition (1-Read Dashboard Optimization)
+            month_ref = user_ref.collection('billing_cycles').document(month_id)
+            month_ref.set({
+                "total_consumption_kwh": cleaned_payload.get('estimated_load', 0.0),
+                "last_updated": gcp_firestore.SERVER_TIMESTAMP,
+                "scope": cleaned_payload.get('scope', 'Unit'),
+                "month": month,
+                "year": year,
+                "recommendations": cleaned_payload.get('recommendations', []),
+                "anomalies": cleaned_payload.get('anomalies', []),
+                "benchmark_breakdown": cleaned_payload.get('benchmark_breakdown', {}),
+                "appliance_breakdown": cleaned_payload.get('breakdown', {}),
+                "hourly_usage": cleaned_payload.get('hourlyUsage', {}),
+            }, merge=True)
+            
+            # 3. Insert Daily Granular Array
+            daily_ref = month_ref.collection('daily_disaggregations').document(day_id)
+            daily_ref.set({
+                "timestamp": gcp_firestore.SERVER_TIMESTAMP,
+                "hourly_usage": cleaned_payload.get('hourlyUsage', {}),
+                "appliance_breakdown": cleaned_payload.get('breakdown', {}),
+                "method": cleaned_payload.get('methodApplied', 'MCMC'),
+                "confidence_scores": cleaned_payload.get('confidence_scores', {})
+            }, merge=True)
+            
+            AppLog.info("FIRESTORE_SAVE", f"SUCCESS: Partitioned hierarchical dual-write completed for {user_id} ({month_id}/{day_id})")
+
+            # Increment monthly total for the forecast currentConsumption tracker.
+            await self.increment_monthly_consumption(
+                user_id, 
+                month, 
+                year, 
+                cleaned_payload.get('estimated_load', 0.0)
+            )
         except Exception as e:
             AppLog.error("FIRESTORE_SAVE", f"CRITICAL PERSISTENCE FAILURE: {str(e)}")
             raise e
@@ -170,14 +238,14 @@ class FirebaseClient:
         except Exception as e:
             AppLog.error("FIRESTORE_FEEDBACK", f"Feedback logging failed: {str(e)}")
 
-    async def update_single_appliance_prob(self, user_id: str, app_name: str, new_prob: float):
+    async def update_single_appliance_prob(self, user_id: str, app_name: str, new_prob: float, is_night: bool = False):
         try:
             app_ref = self.db.collection('users').document(user_id).collection('appliances').document(app_name)
-            app_ref.update({
-                "prob_day": new_prob,
-                "prob_night": new_prob
-            })
-            AppLog.info("FIRESTORE_UPDATE", f"Updated {app_name} probability to {new_prob}")
+            if is_night:
+                app_ref.update({"prob_night": new_prob})
+            else:
+                app_ref.update({"prob_day": new_prob})
+            AppLog.info("FIRESTORE_UPDATE", f"Updated {app_name} probability (night={is_night}) to {new_prob}")
         except Exception as e:
             AppLog.error("FIRESTORE_UPDATE", f"Single update failed for {app_name}: {str(e)}")
 
@@ -239,12 +307,24 @@ class FirebaseClient:
 
     async def get_monthly_consumption(self, user_id: str, month: int, year: int) -> float:
         try:
+            # First, check for a staff-submitted or batch disaggregation result for this month.
+            # This is the most authoritative source for a billing baseline.
+            month_id = f"{year}-{month:02d}"
+            billing_doc = self.db.collection('users').document(user_id) \
+                .collection('billing_cycles').document(month_id).get()
+            
+            if billing_doc.exists:
+                data = billing_doc.to_dict()
+                return float(data.get('total_consumption_kwh', 0.0))
+
+            # Fallback to the stats accumulator (usually for real-time increments).
             doc_id = f"{year}_{month}"
             doc = self.db.collection('users').document(user_id) \
                 .collection('stats').document(doc_id).get()
             
             if doc.exists:
                 return float(doc.to_dict().get('total_kwh', 0.0))
+                
             return 0.0
         except Exception as e:
             AppLog.error("FIRESTORE_READ", f"Failed to fetch monthly consumption: {str(e)}")

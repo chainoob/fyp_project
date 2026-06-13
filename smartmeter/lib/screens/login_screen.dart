@@ -65,7 +65,7 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       } else {
         if ((!isStudent! && !isStaff!)) {
-          await provider.signOut(); 
+          await provider.signOut(context);
           throw Exception("Restricted Access: Please use a valid UTHM email (@student.uthm.edu.my or @uthm.edu.my)");
         }
         context.push(AppRoutes.register);

@@ -1,18 +1,25 @@
 import numpy as np
 import datetime
+import asyncio
 
-def log_manual_override(db, user_id: str, appliance: str, state: float):
+async def log_manual_override(db, user_id: str, appliance: str, state: float):
     # High-level: Records user overrides into a dedicated collection for temporal learning.
     now = datetime.datetime.now(datetime.timezone.utc)
-    db.db.collection('behavioral_logs').add({
+    log_data = {
         'userId': user_id,
         'appliance': appliance.lower(),
         'state': state,
         'hour': now.hour,
         'timestamp': now.isoformat()
-    })
+    }
+    
+    try:
+        # Use to_thread to prevent blocking the async loop with Firestore IO
+        await asyncio.to_thread(db.db.collection('behavioral_logs').add, log_data)
+    except Exception as e:
+        print(f"Failed to log behavioral override: {e}")
 
-def get_tod_probability(db, user_id: str, appliance: str, current_hour: int) -> float:
+async def get_tod_probability(db, user_id: str, appliance: str, current_hour: int) -> float:
     # High-level: Calculates the historical probability of an appliance being active at a given hour.
     try:
         docs = db.db.collection('behavioral_logs') \
@@ -39,8 +46,8 @@ async def apply_adaptive_hybrid_logic(db, user_id, appliance_name, manual_overri
     
     if key in manual_overrides:
         final_state = manual_overrides[key]
-        # Ensure log_manual_override is either awaited if async, or executed synchronously if not
-        log_manual_override(db, user_id, key, final_state) 
+        # Ensure log_manual_override is awaited as it is now async
+        await log_manual_override(db, user_id, key, final_state)
     elif key in network_states:
         final_state = network_states[key]
 
@@ -60,7 +67,7 @@ async def apply_adaptive_hybrid_logic(db, user_id, appliance_name, manual_overri
         elif final_state == 1.0 and instantaneous_wattage < 5.0:
             return round(45.0 / 1000.0, 3) if key == "laptop" else round(50.0 / 1000.0, 3)
 
-    tod_prob = get_tod_probability(db, user_id, key, current_hour)
+    tod_prob = await get_tod_probability(db, user_id, key, current_hour)
     
     # Developer Expectation: Lower detection threshold if historical ToD probability exceeds 60%.
     if tod_prob > 0.6 and key in registered_types:
@@ -72,25 +79,3 @@ async def apply_adaptive_hybrid_logic(db, user_id, appliance_name, manual_overri
         return kwh_value
         
     return 0.0
-
-def run_30_day_forecast(self, appliances: dict, request_data: dict) -> dict:
-        """
-        Executes a localized Markov Chain Monte Carlo (MCMC) forecast utilizing 
-        temporal probability profiles (prob_day, prob_night) over a 30-day projection matrix.
-        """
-        days_to_predict = request_data.get('days_to_predict', 30)
-        total_projected_kwh = 0.0
-
-        for _ in range(days_to_predict):
-            for hour in range(24):
-                for app_id, app_data in appliances.items():
-                    # Apply temporal bounding matrix
-                    is_daytime = 6 <= hour <= 18
-                    base_prob = float(app_data.get('prob_day', 0.2)) if is_daytime else float(app_data.get('prob_night', 0.05))
-                    
-                    # Execute stochastic state transition
-                    if random.random() < base_prob:
-                        wattage = float(app_data.get('wattage', 0))
-                        total_projected_kwh += (wattage / 1000.0)
-
-        return {"total_projected_kwh": round(total_projected_kwh, 2)}

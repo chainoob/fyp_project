@@ -61,8 +61,12 @@ class FHMMService:
                     std_dev = stats.get('std_dev', 1.0)
                     model.startprob_ = np.full(n_states, 1.0 / n_states)
                     
-                    trans_matrix = np.full((n_states, n_states), 0.1 / (n_states - 1))
-                    np.fill_diagonal(trans_matrix, 0.9)
+                    max_dur = stats.get('max_duration_hr', 12.0)
+                    trans_prob = min(0.9, 1.0 / max_dur) if max_dur > 0 else 0.9
+                    stay_prob = 1.0 - trans_prob
+                    
+                    trans_matrix = np.full((n_states, n_states), trans_prob / (n_states - 1))
+                    np.fill_diagonal(trans_matrix, stay_prob)
                     model.transmat_ = trans_matrix
                     
                     model.means_ = np.array([[float(s)] for s in means_source])

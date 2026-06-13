@@ -18,6 +18,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final appUser = context.watch<AppAuthProvider>().currentUser;
     final energyProvider = context.watch<EnergyProvider>();
     final applianceProvider = context.watch<ApplianceProvider>();
+    final isStaffFromAuth = context.watch<AppAuthProvider>().isStaff;
 
     final String? photoUrl = appUser?.photoUrl;
     if (appUser == null) {
@@ -38,18 +39,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
           }
 
           final data = snapshot.data?.data() as Map<String, dynamic>? ?? {};
+          final Map<String, dynamic> dbOverrides = data['manualOverrides'] ?? {};
+
+          // Fix: Ensure we use the most accurate name source for both staff and students.
           String? nameFromDb = data['displayName'] ?? data['name'];
 
           if (nameFromDb == null || nameFromDb.isEmpty) {
-            nameFromDb = appUser.displayName; 
+            nameFromDb = appUser.name; // Use the name from the provider/Users model
           }
 
-          final String displayName = nameFromDb;
+          final String displayName = nameFromDb.isNotEmpty ? nameFromDb : "Authenticated User";
           final String? studentId = data['studentId'] ?? data['matricNumber'];
-          final String role = data['role'] ?? 'student'; 
-          final String initial = displayName.isNotEmpty ? displayName[0].toUpperCase() : "?";
           
-          final bool isStaff = role.toLowerCase() == 'staff';
+          // Cross-verify role from both the document and the auth provider to ensure consistency.
+          final String roleFromDb = data['role'] ?? 'student';
+          final bool isStaff = isStaffFromAuth || roleFromDb.toLowerCase() == 'staff';
+          final String roleDisplay = isStaff ? 'STAFF' : 'STUDENT';
+          
+          final String initial = displayName.isNotEmpty ? displayName[0].toUpperCase() : "?";
 
           return LayoutBuilder(
             builder: (context, constraints) {
@@ -114,7 +121,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                                 borderRadius: BorderRadius.circular(4),
                                               ),
                                               child: Text(
-                                                role.toUpperCase(),
+                                                roleDisplay,
                                                 style: const TextStyle(
                                                     color: AppTheme.ecoTeal,
                                                     fontSize: 11,
@@ -144,7 +151,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               const SizedBox(height: 24),
                               const Text("Hardware Override Constraints", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
                               const SizedBox(height: 8),
-                              _buildManualToggleCard(registeredAppliances, energyProvider),
+                              _buildManualToggleCard(dbOverrides, registeredAppliances, energyProvider),
                             ],
                           ],
                         ),
@@ -185,7 +192,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               );
 
                               if (confirm == true && context.mounted) {
-                                await context.read<AppAuthProvider>().signOut();
+                                await context.read<AppAuthProvider>().signOut(context);
                               }
                             },
                           ),
@@ -202,7 +209,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _buildManualToggleCard(List<String> appliances, EnergyProvider provider) {
+  Widget _buildManualToggleCard(Map<String, dynamic> dbOverrides, List<String> appliances, EnergyProvider provider) {
     if (appliances.isEmpty) {
       return Card(
         color: AppTheme.surface,
@@ -221,7 +228,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
         child: Column(
           children: appliances.map((appName) {
-            final bool isCurrentlyOn = provider.manualOverrides[appName] == 1.0;
+            final bool isCurrentlyOn = (dbOverrides[appName] ?? 0.0) == 1.0;
 
             return SwitchListTile(
               contentPadding: EdgeInsets.zero,

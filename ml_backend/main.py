@@ -1,17 +1,18 @@
+from collections import defaultdict
 import logging
 import datetime
+import calendar
 import os
 import asyncio
 import gc
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import firestore as gcp_firestore
 
 from services.adaptive_logic import apply_adaptive_hybrid_logic
-from models.request_models import FeedbackRequest, ForecastRequest, OptimizationRequest, SeedReddRequest, SyncRequest, DisaggregationRequest, BatchDisaggregationRequest
+from models.request_models import FeedbackRequest, ForecastRequest, SeedReddRequest, SyncRequest, DisaggregationRequest, BatchDisaggregationRequest, AggregationRequest
 from services.firebase_client import FirebaseClient
 from services.simulator import AdaptiveBehavioralSimulator
 from services.optimizer import EnergyOptimizer
@@ -23,6 +24,8 @@ from utils.auth import verify_firebase_token, validate_user_ownership
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from router.vision import router as vision_router
+
 app = FastAPI(title="SmartMeter ML Backend")
 
 app.add_middleware(
@@ -33,15 +36,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(vision_router)
+
 db = FirebaseClient()
 simulator = AdaptiveBehavioralSimulator()
 optimizer = EnergyOptimizer()
 fhmm = FHMMService()
 weather = WeatherService()
-
-class AggregateRequest(BaseModel):
-    month: int
-    year: int
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -72,144 +73,205 @@ async def health_check():
         "environment": "production" if os.getenv("K_SERVICE") else "development"
     }
 
+async def resolve_block_id(identifier: str) -> str:
+    # Resolves a block identifier (Name or ID) to a definitive Document ID.
+    if not identifier or len(identifier) > 25: # Heuristic: IDs are usually shorter/fixed length
+         return identifier
+         
+    # Check if it's already a valid ID by checking for existence.
+    doc = db.db.collection('blocks').document(identifier).get()
+    if doc.exists:
+        return identifier
+        
+    # Otherwise, search by name.
+    blocks = db.db.collection('blocks').where(filter=gcp_firestore.FieldFilter('name', '==', identifier)).limit(1).stream()
+    for b in blocks:
+        return b.id
+        
+    return identifier
+
 @app.post("/api/v1/admin/aggregations")
-async def trigger_campus_aggregation(request: AggregateRequest, token: dict = Depends(verify_firebase_token)):
+async def trigger_aggregation_endpoint(request: AggregationRequest, token: dict = Depends(verify_firebase_token)):
     is_staff = await db.get_user_role(token["uid"]) == 'staff'
     if not is_staff:
         raise HTTPException(status_code=403, detail="Access denied. Staff privileges required.")
+    
+    # Normalize block_id to ensure we query with the Doc ID.
+    resolved_id = await resolve_block_id(request.block_id) if request.block_id else None
         
-    docs = db.db.collection('disaggregation_results') \
-             .where(filter=gcp_firestore.FieldFilter('month', '==', request.month)) \
-             .where(filter=gcp_firestore.FieldFilter('year', '==', request.year)) \
-             .stream()
+    result = await asyncio.to_thread(run_aggregation, request.month, request.year, resolved_id)
+    
+    if result.get("status") == "no_data":
+         raise HTTPException(status_code=400, detail=f"No unit data found for the selected period. Staff must submit unit bills first.")
+         
+    return format_api_response(True, message=f"Aggregation complete.", data=result)
 
-    total_kwh = 0.0
-    total_cost = 0.0
-    total_carbon = 0.0
-    total_breakdown = {}
-    total_hourly = {}
-    all_anomalies = set()
-    processed_count = 0
-
-    async for doc in docs:
-        data = doc.to_dict()
-        if data.get('userId') == 'aggregate' or 'aggregate' in doc.id:
-            continue
-
-        processed_count += 1
-        
-        summary = data.get('summary', {})
-        total_kwh += float(summary.get('totalConsumption', 0.0))
-        total_cost += float(summary.get('totalCost', 0.0))
-        total_carbon += float(data.get('carbonFootprint', 0.0) or data.get('carbon_footprint', 0.0))
-        
-        breakdown = data.get('breakdown', {})
-        for app_name, usage in breakdown.items():
-            total_breakdown[app_name] = total_breakdown.get(app_name, 0.0) + float(usage)
-            
-        hourly = data.get('hourlyUsage', {})
-        for hour, usage in hourly.items():
-            hour_str = str(hour)
-            total_hourly[hour_str] = total_hourly.get(hour_str, 0.0) + float(usage)
-            
-        anomalies = data.get('anomalies', [])
-        for anomaly in anomalies:
-            all_anomalies.add(anomaly)
-
-    if processed_count == 0:
-        raise HTTPException(status_code=400, detail=f"No unit data found for {request.month}/{request.year}. Staff must submit unit bills first.")
-
-    aggregate_doc = {
-        'userId': 'aggregate',
-        'scope': 'Campus',
-        'month': request.month,
-        'year': request.year,
-        'carbonFootprint': total_carbon,
-        'breakdown': total_breakdown,
-        'anomalies': list(all_anomalies),
-        'hourlyUsage': total_hourly,
-        'summary': {
-            'totalConsumption': total_kwh,
-            'totalCost': total_cost,
-            'keyIssue': f"Aggregated Campus report compiled from {processed_count} spatial units.",
-            'recommendations': ["Consolidate campus-wide optimizations."],
-            'comparisonPercent': 0.0
-        },
-        'kpis': {
-            'totalKwh': total_kwh,
-            'dailyAvgKwh': total_kwh / 30.0 if processed_count > 0 else 0.0,
-            'peakKwh': 0.0,
-            'peakTime': "N/A",
-            'totalCost': total_cost,
-            'changePercent': 0.0
-        },
-        'createdAt': gcp_firestore.SERVER_TIMESTAMP
+def _create_empty_bucket() -> dict:
+    return {
+        "processed_count": 0,
+        "total_kwh": 0.0,
+        "breakdown": defaultdict(float),
+        "hourly": defaultdict(float),
+        "anomalies": set()
     }
 
-    doc_id = f"aggregate_{request.month}_{request.year}"
-    await db.db.collection('disaggregation_results').document(doc_id).set(aggregate_doc)
+def run_aggregation(month: int, year: int, target_id: str | None = None) -> dict:
+    """Single-pass O(N) aggregation for Campus, Block, and Unit scopes."""
+    logger.info(f"EX_AGG: Executing Universal Multi-Tier Aggregation for {year}-{month:02d}")
+    
+    month_id = f"{year}-{month:02d}"
+    user_docs = db.db.collection('users').stream()
 
-    return format_api_response(True, message=f"Campus aggregation complete for {request.month}/{request.year}.", data={"units_processed": processed_count})
+    # Memory Buckets
+    campus_bucket = _create_empty_bucket()
+    block_buckets = defaultdict(_create_empty_bucket)
+    unit_buckets = defaultdict(_create_empty_bucket)
 
-@app.post("/api/v1/optimizations")
-async def run_optimization(request: OptimizationRequest, token: dict = Depends(verify_firebase_token)):
+    for user_doc in user_docs:
+        user_data = user_doc.to_dict() or {}
+        
+        profile = user_data.get('profile', {})
+        role = profile.get('role', user_data.get('role', 'student'))
+        if role == 'system_aggregate' or 'aggregate' in user_doc.id:
+            continue
+
+        loc = user_data.get('location', {})
+        u_id = loc.get('unit_id', user_data.get('assignedUnitId'))
+        b_id = loc.get('block_id', user_data.get('dormBlock', user_data.get('blockId')))
+
+        if not u_id and not b_id:
+            continue
+
+        # Fetch monthly data
+        cycle_ref = user_doc.reference.collection('billing_cycles').document(month_id)
+        cycle_doc = cycle_ref.get()
+        if not cycle_doc.exists:
+            continue
+
+        data = cycle_doc.to_dict() or {}
+        
+        # Accumulate Metrics
+        kwh = float(data.get('total_consumption_kwh', 0.0))
+        breakdown = data.get('monthly_appliance_breakdown', {})
+        hourly = data.get('monthly_hourly_usage', {})
+        anomalies = data.get('anomalies', [])
+
+        campus_bucket["processed_count"] += 1
+        campus_bucket["total_kwh"] += kwh
+        for k, v in breakdown.items(): campus_bucket["breakdown"][k] += float(v)
+        for k, v in hourly.items(): campus_bucket["hourly"][str(k)] += float(v)
+        for a in anomalies: campus_bucket["anomalies"].add(a)
+
+        if b_id:
+            block_buckets[b_id]["processed_count"] += 1
+            block_buckets[b_id]["total_kwh"] += kwh
+            for k, v in breakdown.items(): block_buckets[b_id]["breakdown"][k] += float(v)
+            for k, v in hourly.items(): block_buckets[b_id]["hourly"][str(k)] += float(v)
+            for a in anomalies: block_buckets[b_id]["anomalies"].add(a)
+
+        if u_id:
+            unit_buckets[u_id]["processed_count"] += 1
+            unit_buckets[u_id]["total_kwh"] += kwh
+            for k, v in breakdown.items(): unit_buckets[u_id]["breakdown"][k] += float(v)
+            for k, v in hourly.items(): unit_buckets[u_id]["hourly"][str(k)] += float(v)
+            for a in anomalies: unit_buckets[u_id]["anomalies"].add(a)
+
+    if campus_bucket["processed_count"] == 0:
+        logger.warning("EX_AGG: Zero units processed. Database empty for this billing cycle.")
+        return {"status": "no_data"}
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    day_id = now.strftime("%Y-%m-%d")
+    batch = db.db.batch()
+    write_count = 0
+
+    def _prepare_write(entity_id: str, scope: str, bucket: dict):
+        nonlocal write_count
+        
+        peak_val = max(bucket["hourly"].values(), default=0.0)
+        peak_hour = next((k for k, v in bucket["hourly"].items() if v == peak_val), "0")
+
+        doc_payload = {
+            "summary": {
+                "totalConsumption": round(bucket["total_kwh"], 2),
+                "keyIssue": f"Aggregated {scope} report compiled from {bucket['processed_count']} active records.",
+                "recommendations": [f"Review {scope.lower()} efficiency targets."]
+            },
+            "kpis": {
+                "totalKwh": round(bucket["total_kwh"], 2),
+                "dailyAvgKwh": round(bucket["total_kwh"] / 30.0, 2),
+                "peakKwh": round(peak_val, 2),
+                "peakTime": f"{peak_hour}:00"
+            },
+            "breakdown": {k: round(v, 2) for k, v in bucket["breakdown"].items()},
+            "hourly": {k: round(v, 3) for k, v in bucket["hourly"].items()},
+            "anomalies": list(bucket["anomalies"])
+        }
+
+        user_ref = db.db.collection('users').document(entity_id)
+        month_ref = user_ref.collection('billing_cycles').document(month_id)
+        daily_ref = month_ref.collection('daily_disaggregations').document(day_id)
+
+        batch.set(user_ref, {
+            "profile": {"role": "system_aggregate"},
+            "metrics": {
+                "lifetime_kwh": gcp_firestore.Increment(doc_payload["summary"]["totalConsumption"]),
+                "last_aggregate_update": gcp_firestore.SERVER_TIMESTAMP
+            }
+        }, merge=True)
+
+        batch.set(month_ref, {
+            "total_consumption_kwh": doc_payload["summary"]["totalConsumption"],
+            "last_updated": gcp_firestore.SERVER_TIMESTAMP,
+            "scope": scope,
+            "month": month,
+            "year": year,
+            "recommendations": doc_payload["summary"]["recommendations"],
+            "anomalies": doc_payload["anomalies"],
+            "benchmark_breakdown": doc_payload["breakdown"],
+            "monthly_appliance_breakdown": doc_payload["breakdown"],
+            "monthly_hourly_usage": doc_payload["hourly"]
+        }, merge=True)
+
+        # 3. Daily Entry
+        batch.set(daily_ref, {
+            "timestamp": gcp_firestore.SERVER_TIMESTAMP,
+            "method": "Aggregation",
+            "appliance_breakdown": doc_payload["breakdown"],
+            "hourly_usage": doc_payload["hourly"],
+            "kpis": doc_payload["kpis"],
+            "summary": doc_payload["summary"],
+            "scope": scope
+        }, merge=True)
+        
+        write_count += 3
+
+        if write_count >= 490:
+            batch.commit()
+            write_count = 0
+
+    _prepare_write('aggregate', 'Campus', campus_bucket)
+    
+    for b_id, bucket in block_buckets.items():
+        _prepare_write(b_id, 'Block', bucket)
+        
+    for u_id, bucket in unit_buckets.items():
+        _prepare_write(u_id, 'Unit', bucket)
+
+    if write_count > 0:
+        batch.commit()
+
+    # Update campus/config totalUsage for GoalProvider
     try:
-        is_staff = await db.get_user_role(token["uid"]) == 'staff'
-        validate_user_ownership(request.user_id, token["uid"], is_staff=is_staff)
-        appliances = await db.get_user_appliances(request.user_id)
-        if not appliances:
-            raise ValueError("No active appliances found for user.")
-            
-        # Optimization math is CPU-heavy, keep in thread pool
-        new_weights = await asyncio.to_thread(optimizer.refine, appliances, request.actual_bill)
-        
-        # Native async write
-        await db.update_appliance_weights(request.user_id, appliances, new_weights)
-        
-        return format_api_response(True, message="Weights optimized successfully")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        db.db.collection('campus').document('config').set({
+            "totalUsage": round(campus_bucket["total_kwh"], 2)
+        }, merge=True)
+        logger.info(f"EX_AGG: Updated campus/config with totalUsage: {round(campus_bucket['total_kwh'], 2)}")
     except Exception as e:
-        logger.error(f"Optimization failed: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to optimize energy weights.")
+        logger.error(f"EX_AGG: Failed to update campus/config: {e}")
 
-@app.post("/api/v1/disaggregations")
-async def trigger_batch_disaggregation(request: BatchDisaggregationRequest, background_tasks: BackgroundTasks, token: dict = Depends(verify_firebase_token)):
-    try:
-        is_staff = await db.get_user_role(token["uid"]) == 'staff'
-
-        from utils.auth import validate_user_ownership
-        validate_user_ownership(request.user_id, token["uid"], is_staff=is_staff)
-
-        student_uid = request.user_id
-        telemetry_node = getattr(request, 'telemetry_source_id', student_uid) or student_uid
-
-        # Route extraction to Unit node
-        readings = await db.get_historical_telemetry(
-            telemetry_node, 
-            request.month, 
-            request.year
-        )
-        
-        if not readings:
-            return format_api_response(False, message="No telemetry found for the selected period.", status_code=400)
-
-        payloads = await _run_multi_tenant_pipeline(
-            unit_id=telemetry_node,
-            student_uids=[student_uid],
-            readings=readings,
-            request=request
-        )
-
-        for payload in payloads:
-            background_tasks.add_task(db.save_disaggregation_result, payload)
-
-        return format_api_response(True, data={"students_processed": 1})
-        
-    except Exception as e:
-        import logging
-        logging.error(f"Batch pipeline failed: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal processing error on batch disaggregation.")
+    logger.info(f"EX_AGG: Success. Generated Campus, {len(block_buckets)} Blocks, and {len(unit_buckets)} Units.")
+    return {"status": "success", "campus_kwh": campus_bucket["total_kwh"]}
 
 @app.post("/api/v1/realtime-disaggregations")
 async def process_realtime_telemetry(request: DisaggregationRequest, background_tasks: BackgroundTasks, token: dict = Depends(verify_firebase_token)):
@@ -226,11 +288,16 @@ async def process_realtime_telemetry(request: DisaggregationRequest, background_
         if len(raw_readings) < 3:
             return format_api_response(False, message="Insufficient real-time sequence frame window.", status_code=400)
 
+        # Always provide a behavioral template for temporal distribution
+        mcmc_result = await asyncio.to_thread(simulator.run_monte_carlo, registered_appliances, {})
+        hourly_profile_template = mcmc_result.get('hourly_profile', {})
+
         payload = await _run_disaggregation_pipeline(
             user_id,
             raw_readings,
             request,
-            registered_appliances
+            registered_appliances,
+            hourly_context=hourly_profile_template
         )
 
         target_unit_id = user_id
@@ -251,13 +318,66 @@ async def process_realtime_telemetry(request: DisaggregationRequest, background_
         logger.error(f"Real-time pipeline failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal processing error on streaming window.")
 
-async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request):
-    logger.info(f"Pipeline Input - Readings Length: {len(readings)}")
-    logger.info(f"Pipeline Input - First 5 readings: {readings[:5]}")
-    
-    logger.info(f"Resolving students for Unit ID: {unit_id}")
-    logger.info(f"Students found: {student_uids}")
+@app.post("/api/v1/disaggregations")
+async def trigger_batch_disaggregation(request: BatchDisaggregationRequest, background_tasks: BackgroundTasks, token: dict = Depends(verify_firebase_token)):
+    try:
+        is_staff = await db.get_user_role(token["uid"]) == 'staff'
+        validate_user_ownership(request.user_id, token["uid"], is_staff=is_staff)
+        
+        # Fetch historical telemetry for the specified window
+        source_id = request.telemetry_source_id or request.user_id
+        readings = await db.get_historical_telemetry(source_id, request.month, request.year, block_id=request.block_id)
+        
+        if not readings or len(readings) < 5:
+             return format_api_response(False, message="Insufficient historical telemetry for disaggregation.", status_code=400)
 
+        student_docs = db.db.collection('users').where(filter=gcp_firestore.FieldFilter('assignedUnitId', '==', source_id)).stream()
+        student_uids = [doc.id for doc in student_docs]
+        
+        if not student_uids:
+            logger.warning(f"No students resolved for unit {source_id}. Defaulting to request user.")
+            student_uids = [request.user_id]
+
+        # Aggregate unit appliance pool for MCMC behavioral baseline
+        all_appliances = {}
+        for uid in student_uids:
+            apps = await db.get_user_appliances(uid) or {}
+            for k, v in apps.items():
+                all_appliances[f"{uid}_{k}"] = v
+        
+        mcmc_result = await asyncio.to_thread(simulator.run_monte_carlo, all_appliances, {})
+        hourly_profile = mcmc_result.get('hourly_profile', {})
+        
+        # Enforce default 24-hour distribution to prevent frontend serialization failure
+        if not hourly_profile or sum(hourly_profile.values()) == 0:
+            hourly_profile = {str(i): 1.0 for i in range(24)}
+
+        # Execute primary disaggregation pipeline
+        payloads = await _run_multi_tenant_pipeline(
+            unit_id=source_id,
+            student_uids=student_uids,
+            readings=readings,
+            request=request,
+            block_id_override=request.block_id,
+            hourly_context=hourly_profile
+        )
+
+        # Persist student-level disaggregation results
+        for p in payloads:
+            background_tasks.add_task(db.save_disaggregation_result, p)
+
+        # Trigger multi-tier aggregation background task
+        background_tasks.add_task(run_aggregation, request.month, request.year)
+            
+        return format_api_response(True, message=f"Disaggregation triggered for {len(student_uids)} students.", data={"student_count": len(student_uids)})
+
+    except Exception as e:
+        logger.error(f"Batch disaggregation failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request, block_id_override=None, hourly_context=None):
+    logger.info(f"Pipeline Input - Readings Length: {len(readings)}")
+    
     max_ml_points = 2000
     reduction_factor = max(1, len(readings) // max_ml_points)
     decimated_readings = readings[::reduction_factor]
@@ -273,27 +393,21 @@ async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request):
         chunk = smoothed_readings[i:i + chunk_size]
         chunk_results = await asyncio.to_thread(fhmm.disaggregate, chunk)
         
-        logger.info(f"FHMM Output for chunk: {chunk_results}")
-        
         for k, v in chunk_results.items():
             key = str(k).lower()
-            scalar_value = 0.0
-            if isinstance(v, list):
-                scalar_value = float(np.mean(v)) if len(v) > 0 else 0.0
-            else:
-                scalar_value = float(v)
-            
+            scalar_value = float(np.mean(v)) if isinstance(v, list) and len(v) > 0 else float(v) if not isinstance(v, list) else 0.0
             aggregated_fhmm[key] = aggregated_fhmm.get(key, 0.0) + scalar_value
 
-    normalized_fhmm = aggregated_fhmm
     now = datetime.datetime.now(datetime.timezone.utc)
-
     student_raw_breakdowns = {}
     room_raw_total = 0.0
 
     for uid in student_uids:
         registered_appliances = await db.get_user_appliances(uid) or {}
         registered_types = {str(app.get('type', '')).lower() for app in registered_appliances.values() if app.get('type')}
+        
+        user_doc = await db.get_user_data(uid)
+        manual_overrides = user_doc.get('manualOverrides', {}) if user_doc else {}
 
         breakdown = {}
         for app_id, app_data in registered_appliances.items():
@@ -303,14 +417,24 @@ async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request):
                 db=db,
                 user_id=uid,
                 appliance_name=app_type.lower(),
-                manual_overrides={},
+                manual_overrides=manual_overrides,
                 network_states={},
-                fhmm_predictions=normalized_fhmm,
+                fhmm_predictions=aggregated_fhmm,
                 registered_types=registered_types,
                 current_hour=12
             )
             
+            # Enforce minimum appliance baseline to prevent zero-value scaling
+            raw_usage = max(raw_usage, 0.05)
             breakdown[app_type] = breakdown.get(app_type, 0.0) + raw_usage
+
+        # Fallback to standard baseline if tenant has no registered appliances
+        if not breakdown:
+            breakdown = {
+                "Lamp": 0.05,
+                "Charger": 0.05,
+                "Fan": 0.05
+            }
 
         student_raw_breakdowns[uid] = breakdown
         room_raw_total += sum(breakdown.values())
@@ -332,83 +456,56 @@ async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request):
             scaled_breakdown = {k: round(avg_share, 2) for k in raw_breakdown.keys()}
 
         student_load = sum(scaled_breakdown.values())
-        student_cost = student_load 
-        student_carbon = student_load * 0.447
-
         recommendations = generate_recommendations(scaled_breakdown)
         benchmark_breakdown = {k: round(v * 0.9, 2) for k, v in scaled_breakdown.items()}
+
+        final_hourly = {}
+        peak_hour = "0"
+        peak_val = 0.0
+        
+        if hourly_context:
+            profile_total = sum(hourly_context.values())
+            scale = (student_load / profile_total) if profile_total > 0 else 0
+            for h, v in hourly_context.items():
+                h_str = str(h)
+                h_val = round(v * scale, 3)
+                final_hourly[h_str] = h_val
+                if h_val > peak_val:
+                    peak_val = h_val
+                    peak_hour = h_str
+        else:
+            final_hourly = {str(h): round(student_load / 24, 3) for h in range(24)}
 
         payloads.append({
             "userId": uid, 
             "unitId": unit_id,
-            "blockId": getattr(request, 'block_id', None),
+            "blockId": block_id_override,
+            "scope": "Unit",
             "month": request.month,
             "year": request.year,
             "estimated_load": round(student_load, 2),
-            "estimated_cost": round(student_cost, 2),
-            "carbon_footprint": round(student_carbon, 2),
             "breakdown": scaled_breakdown,
             "benchmark_breakdown": benchmark_breakdown,
             "recommendations": recommendations,
             "anomalies": [],
-            "hourlyUsage": {str(now.hour): round(student_load, 2)},
+            "hourlyUsage": final_hourly,
             "timestamp": now.isoformat(),
             "summary": {
                 "totalConsumption": round(student_load, 2),
-                "totalCost": round(student_cost, 2),
                 "keyIssue": recommendations[0] if recommendations else "Consumption nominal.",
                 "recommendations": recommendations
             },
             "kpis": {
                 "totalKwh": round(student_load, 2),
                 "dailyAvgKwh": round(student_load / 30.0, 2),
-                "totalCost": round(student_cost, 2)
+                "peakKwh": round(peak_val, 2),
+                "peakTime": f"{peak_hour}:00"
             }
         })
 
     return payloads
 
-def _build_master_unit_payload(unit_id, payloads, request):
-    total_load = sum(p["estimated_load"] for p in payloads)
-    total_cost = sum(p["estimated_cost"] for p in payloads)
-    total_carbon = sum(p["carbon_footprint"] for p in payloads)
-    
-    master_breakdown = {}
-    for p in payloads:
-        for app, val in p["breakdown"].items():
-            master_breakdown[app] = master_breakdown.get(app, 0.0) + val
-            
-    now = datetime.datetime.now(datetime.timezone.utc)
-    recommendations = generate_recommendations(master_breakdown)
-
-    return {
-        "userId": unit_id,
-        "scope": "Unit",
-        "month": request.month,
-        "year": request.year,
-        "estimated_load": round(total_load, 2),
-        "estimated_cost": round(total_cost, 2),
-        "carbon_footprint": round(total_carbon, 2),
-        "breakdown": master_breakdown,
-        "benchmark_breakdown": {k: round(v * 0.9, 2) for k, v in master_breakdown.items()},
-        "recommendations": recommendations,
-        "anomalies": [],
-        "hourlyUsage": {str(now.hour): round(total_load, 2)},
-        "timestamp": now.isoformat(),
-        "summary": {
-            "totalConsumption": round(total_load, 2),
-            "totalCost": round(total_cost, 2),
-            "keyIssue": recommendations[0] if recommendations else "Consumption nominal.",
-            "recommendations": recommendations
-        },
-        "kpis": {
-            "totalKwh": round(total_load, 2),
-            "dailyAvgKwh": round(total_load / 30.0, 2),
-            "totalCost": round(total_cost, 2)
-        }
-    }
-
-async def _run_disaggregation_pipeline(user_id, raw_readings, request, registered_appliances):
+async def _run_disaggregation_pipeline(user_id, raw_readings, request, registered_appliances, hourly_context=None):
     if len(raw_readings) > 20:
         readings_to_process = raw_readings[-20:]
     else:
@@ -453,12 +550,11 @@ async def _run_disaggregation_pipeline(user_id, raw_readings, request, registere
 
     user_data = await db.get_user_data(user_id)
     energy_goal = user_data.get('energyGoal', 0) if user_data else 0
+    estimated_load = sum(fhmm_breakdown.values())
 
     if energy_goal > 0:
         cumulative_historical_load = await db.get_monthly_consumption(user_id, now.month, now.year)
-        
-        current_window_load = sum(fhmm_breakdown.values())
-        total_monthly_consumption = cumulative_historical_load + current_window_load
+        total_monthly_consumption = cumulative_historical_load + estimated_load
 
         if total_monthly_consumption > energy_goal:
             await db.send_fcm_notification(
@@ -467,14 +563,24 @@ async def _run_disaggregation_pipeline(user_id, raw_readings, request, registere
                 f"Your monthly consumption ({total_monthly_consumption:.2f} kWh) has broken your budget goal of {energy_goal} kWh."
             )
 
+    # Align peak usage with MCMC profile or decimated telemetry
+    final_hourly = {}
+    if hourly_context:
+        # Scale the context profile to the current window load
+        profile_total = sum(hourly_context.values())
+        scale = (estimated_load / profile_total) if profile_total > 0 else 0
+        final_hourly = {str(h): round(v * scale, 3) for h, v in hourly_context.items()}
+    else:
+        final_hourly = {str(current_hour): round(estimated_load, 2)}
+
     return {
         "userId": user_id,
         "month": now.month,
         "year": now.year,
-        "estimated_load": round(sum(fhmm_breakdown.values()), 2),
+        "estimated_load": round(estimated_load, 2),
         "breakdown": fhmm_breakdown,
         "anomalies": [],
-        "hourlyUsage": {str(current_hour): round(sum(fhmm_breakdown.values()), 2)},
+        "hourlyUsage": final_hourly,
         "timestamp": now.isoformat()
     }
 
@@ -488,7 +594,7 @@ async def sync_daily_usage(request: SyncRequest, token: dict = Depends(verify_fi
         results = await asyncio.to_thread(simulator.run_monte_carlo, appliances, request.context)
         await db.save_daily_usage(request.user_id, results['hourly_profile'])
         
-        return format_api_response(True, message="Daily sync complete")
+        return format_api_response(True, message="Daily sync complete", data=results['hourly_profile'])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -523,8 +629,24 @@ async def generate_energy_forecast(request: ForecastRequest, token: dict = Depen
     logger.info(f"TRACE: Current consumption: {current_consumption}")
 
     try:
+        sys_config = await db.get_system_config()
+        if not sys_config.get("mcmc_enabled", True):
+            raise Exception("MCMC disabled by feature flag")
+
+        # Environmental Modulation
+        env_context = await weather.get_contextual_data_async()
+        sim_payload = request.model_dump()
+        sim_payload.update(env_context) # Merge thermal data
+
+        base_temp = 27.0
+        temp_scalar = max(1.0, 1.0 + (env_context["temperature"] - base_temp) * 0.1)
+        for app_id, profile in appliances.items():
+            if str(profile.get('type', '')).title() == "Fan":
+                profile["prob_day"] = min(0.99, float(profile.get("prob_day", 0.5)) * temp_scalar)
+                profile["prob_night"] = min(0.99, float(profile.get("prob_night", 0.5)) * temp_scalar)
+
         forecast_result = await asyncio.wait_for(
-            asyncio.to_thread(getattr(simulator, 'run_30_day_forecast', simulator.run_monte_carlo), appliances, request.model_dump()),
+            asyncio.to_thread(getattr(simulator, 'run_30_day_forecast', simulator.run_monte_carlo), appliances, sim_payload),
             timeout=8.0
         )
         logger.info(f"TRACE: MCMC raw output: {forecast_result}")
@@ -546,6 +668,17 @@ async def generate_energy_forecast(request: ForecastRequest, token: dict = Depen
 
     total_predicted = current_consumption + projected_load
 
+    # Calculate remaining days in the month to prevent double counting
+    now = datetime.datetime.now(datetime.timezone.utc)
+    _, last_day = calendar.monthrange(request.target_year, request.target_month)
+    remaining_days = max(0, last_day - now.day)
+    
+    # If we are in the target month, only predict for remaining days
+    if now.month == request.target_month and now.year == request.target_year:
+        scaling_ratio = remaining_days / request.days_to_predict
+        projected_load = projected_load * scaling_ratio
+        total_predicted = current_consumption + projected_load
+
     payload = {
         "userId": user_id,
         "targetMonth": request.target_month,
@@ -554,7 +687,9 @@ async def generate_energy_forecast(request: ForecastRequest, token: dict = Depen
         "projectedAddition": round(projected_load, 2),
         "estimatedEndOfMonthTotal": round(total_predicted, 2),
         "methodApplied": method_used,
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+        "timestamp": now.isoformat(),
+        "mcmc_hourly_profile": forecast_result.get('hourly_profile', {}),
+        "remaining_days": remaining_days
     }
     
     logger.info(f"TRACE: Final Payload: {payload}")
@@ -576,11 +711,22 @@ async def handle_feedback(request: FeedbackRequest, token: dict = Depends(verify
 
         is_false_positive = (request.predicted_state and not request.actual_state)
         learning_rate = 0.05
-        current_p = app_data.get('prob_day', 0.5)
+        
+        # Determine temporal window
+        is_night = False
+        if request.timestamp:
+            try:
+                dt = datetime.datetime.fromisoformat(request.timestamp.replace('Z', '+00:00'))
+                hour = dt.hour
+                is_night = hour < 7 or hour > 19
+            except ValueError:
+                pass
+                
+        current_p = app_data.get('prob_night' if is_night else 'prob_day', 0.5)
 
         new_p = max(0.01, current_p - learning_rate) if is_false_positive else min(0.99, current_p + learning_rate)
         
-        await db.update_single_appliance_prob(request.user_id, request.appliance_name, new_p)
+        await db.update_single_appliance_prob(request.user_id, request.appliance_name, new_p, is_night)
         
         if is_false_positive:
             current_std = app_data.get('std_dev', 1.0)
@@ -692,12 +838,12 @@ async def seed_exact_synthetic_redd(request: SeedReddRequest, token: dict = Depe
             
             write_count += 1
             if write_count >= 400:  
-                await batch.commit()
+                await asyncio.to_thread(batch.commit)
                 batch = db.db.batch()
                 write_count = 0
                 
         if write_count > 0:
-            await batch.commit()
+            await asyncio.to_thread(batch.commit)
 
         del df
         gc.collect()
