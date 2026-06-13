@@ -152,8 +152,8 @@ def run_aggregation(month: int, year: int, target_id: str | None = None) -> dict
         
         # Accumulate Metrics
         kwh = float(data.get('total_consumption_kwh', 0.0))
-        breakdown = data.get('monthly_appliance_breakdown', {})
-        hourly = data.get('monthly_hourly_usage', {})
+        breakdown = data.get('monthly_appliance_breakdown', data.get('appliance_breakdown', {}))
+        hourly = data.get('monthly_hourly_usage', data.get('hourly_usage', {}))
         anomalies = data.get('anomalies', [])
 
         campus_bucket["processed_count"] += 1

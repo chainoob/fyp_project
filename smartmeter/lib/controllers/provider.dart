@@ -131,6 +131,7 @@ class AppAuthProvider extends ChangeNotifier {
     context.read<EnergyProvider>().clear();
 
     await _repo.signOut();
+    _currentUser = null;
     _role = null;
     notifyListeners();
   }

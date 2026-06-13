@@ -74,7 +74,7 @@ class FirestoreRepository implements EnergyRepository {
     return _auth.authStateChanges().asyncExpand((firebaseUser) {
       if (firebaseUser == null) return Stream.value(null);
 
-      return _db.collection('users').doc(firebaseUser.uid).snapshots().map((doc) {
+      return _db.collection('users').doc(firebaseUser.uid).snapshots().map<Users?>((doc) {
         if (doc.exists) return Users.fromFirestore(doc);
 
         return Users(
@@ -83,6 +83,9 @@ class FirestoreRepository implements EnergyRepository {
           name: firebaseUser.displayName ?? 'User',
           role: 'student',
         );
+      }).handleError((error) {
+        AppLog.error("Auth State Firestore Stream Error", error);
+        return null;
       });
     });
   }

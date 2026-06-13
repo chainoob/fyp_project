@@ -30,6 +30,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     return SafeArea(
       child: StreamBuilder<DocumentSnapshot>(
+        key: ValueKey(uid),
         stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
         builder: (context, snapshot) {
           if (snapshot.hasError) return const Center(child: Text("Error loading profile"));

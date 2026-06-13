@@ -19,6 +19,34 @@ class AppRouter {
     return GoRouter(
       initialLocation: AppRoutes.root,
       refreshListenable: auth,
+      redirect: (context, state) {
+        final loggedIn = auth.loggedIn;
+        final isGoingToRoot = state.matchedLocation == AppRoutes.root;
+        final isGoingToRegister = state.matchedLocation == AppRoutes.register;
+
+        if (!loggedIn) {
+          if (!isGoingToRoot && !isGoingToRegister) {
+            return AppRoutes.root;
+          }
+          return null;
+        }
+
+        // User is logged in
+        final isStaff = auth.isStaff;
+        if (isGoingToRoot) {
+          return isStaff ? AppRoutes.staffHome : AppRoutes.studentHome;
+        }
+
+        if (isStaff && state.matchedLocation == AppRoutes.studentHome) {
+          return AppRoutes.staffHome;
+        }
+
+        if (!isStaff && state.matchedLocation == AppRoutes.staffHome) {
+          return AppRoutes.studentHome;
+        }
+
+        return null;
+      },
 
       routes: [
         GoRoute(
