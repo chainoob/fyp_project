@@ -39,6 +39,7 @@ abstract class EnergyRepository {
   Stream<Map<String, dynamic>> getCampusGoalStream();
   Future<void> updateCampusGoal(double newGoal);
   Future<void> saveManualOverrides(String uid, Map<String, double?> overrides);
+  Future<void> toggleUsageSession(String uid, String applianceName, String applianceType, bool isOn);
 
   Future<List<Map<String, dynamic>>> fetchBlocks();
   Future<List<Map<String, dynamic>>> fetchUnits(String blockId);
@@ -343,6 +344,40 @@ class FirestoreRepository implements EnergyRepository {
   }
 
   @override
+  Future<void> toggleUsageSession(String uid, String applianceName, String applianceType, bool isOn) async {
+    final CollectionReference sessionsRef = _db
+        .collection('users')
+        .doc(uid)
+        .collection('usage_sessions');
+
+    if (isOn) {
+      await sessionsRef.add({
+        'appliance': applianceName.toLowerCase().trim(),
+        'type': applianceType.toLowerCase().trim(),
+        'start_time': FieldValue.serverTimestamp(),
+        'end_time': null,
+        'auto_cutoff': false,
+      });
+    } else {
+      final String targetApp = applianceName.toLowerCase().trim();
+      
+      await _db.runTransaction((transaction) async {
+        final QuerySnapshot openSessions = await sessionsRef
+            .where('appliance', isEqualTo: targetApp)
+            .where('end_time', isNull: true)
+            .get();
+
+        for (final doc in openSessions.docs) {
+          transaction.update(doc.reference, {
+            'end_time': FieldValue.serverTimestamp(),
+            'auto_cutoff': false,
+          });
+        }
+      });
+    }
+  }
+
+  @override
   Future<List<Map<String, dynamic>>> fetchBlocks() async {
     final snap = await _db.collection('blocks').orderBy('name').get();
     return snap.docs.map((d) => {'id': d.id, 'name': d['name'] ?? 'Unknown'}).toList();
@@ -388,8 +423,30 @@ class FirestoreRepository implements EnergyRepository {
           .get();
 
       final Map<String, double> applianceBreakdown = {};
+      final Map<String, dynamic> rawBreakdown = Map<String, dynamic>.from(
+          currentDataMap['appliance_breakdown'] ?? 
+          currentDataMap['monthly_appliance_breakdown'] ?? 
+          currentDataMap['breakdown'] ?? 
+          {}
+      );
+      rawBreakdown.forEach((key, val) {
+        applianceBreakdown[key] = (val as num?)?.toDouble() ?? 0.0;
+      });
+
       final Map<int, double> hourlyUsage = {};
+      final Map<String, dynamic> rawHourly = Map<String, dynamic>.from(
+          currentDataMap['hourly_usage'] ?? 
+          currentDataMap['monthly_hourly_usage'] ?? 
+          currentDataMap['hourlyUsage'] ?? 
+          {}
+      );
+      rawHourly.forEach((key, val) {
+        final int hour = int.tryParse(key) ?? 0;
+        hourlyUsage[hour] = (val as num?)?.toDouble() ?? 0.0;
+      });
+
       final List<DailyUsagePoint> usageTrend = [];
+      final bool useSnapshotFallback = rawBreakdown.isEmpty;
 
       for (final QueryDocumentSnapshot doc in dailySnapshot.docs) {
         final Map<String, dynamic> dailyData = Map<String, dynamic>.from(doc.data() as Map? ?? {});
@@ -401,7 +458,9 @@ class FirestoreRepository implements EnergyRepository {
         double dailyTotal = 0.0;
         dailyBreakdown.forEach((key, val) {
           final double valDouble = (val as num?)?.toDouble() ?? 0.0;
-          applianceBreakdown[key] = (applianceBreakdown[key] ?? 0.0) + valDouble;
+          if (useSnapshotFallback) {
+            applianceBreakdown[key] = (applianceBreakdown[key] ?? 0.0) + valDouble;
+          }
           dailyTotal += valDouble;
         });
 
@@ -409,7 +468,9 @@ class FirestoreRepository implements EnergyRepository {
         dailyHourly.forEach((key, val) {
           final int hour = int.tryParse(key) ?? 0;
           final double valDouble = (val as num?)?.toDouble() ?? 0.0;
-          hourlyUsage[hour] = (hourlyUsage[hour] ?? 0.0) + valDouble;
+          if (useSnapshotFallback) {
+            hourlyUsage[hour] = (hourlyUsage[hour] ?? 0.0) + valDouble;
+          }
         });
 
         usageTrend.add(DailyUsagePoint(day, dailyTotal));

@@ -113,7 +113,7 @@ class FirebaseClient:
                     "prob_day": float(new_weights[i]),
                     "prob_night": float(new_weights[i])
                 })
-            batch.commit()
+            await asyncio.to_thread(batch.commit)
             AppLog.info("FIRESTORE_BATCH", f"Weights updated for {len(appliances)} appliances.")
         except Exception as e:
             AppLog.error("FIRESTORE_BATCH", f"Batch update failed: {str(e)}")
@@ -176,7 +176,7 @@ class FirebaseClient:
             }, merge=True)
             
             # 3. Insert Daily Granular Array
-            daily_ref = month_ref.collection('daily_disaggregations').document(day_id)
+            daily_ref = month_ref.collection('daily_disaggregations').document(month_id)
             daily_ref.set({
                 "timestamp": gcp_firestore.SERVER_TIMESTAMP,
                 "hourly_usage": cleaned_payload.get('hourlyUsage', {}),
@@ -203,7 +203,7 @@ class FirebaseClient:
             user_id = payload.get('userId')
             cleaned_payload = self._clean_numpy(payload)
             
-            self.db.collection('realtime_results').document(user_id).set(cleaned_payload)
+            await asyncio.to_thread(self.db.collection('realtime_results').document(user_id).set, cleaned_payload)
             AppLog.info("FIRESTORE_REALTIME", f"Real-time result cached for user: {user_id}")
         except Exception as e:
             AppLog.error("FIRESTORE_REALTIME", f"Real-time persistence failure: {str(e)}")
@@ -214,7 +214,7 @@ class FirebaseClient:
             doc_ref = self.db.collection('users').document(user_id) \
                 .collection('daily_usage').document(date_str)
             
-            doc_ref.set({
+            await asyncio.to_thread(doc_ref.set, {
                 "kwh": sum(hourly_profile.values()),
                 "hourly_breakdown": hourly_profile,
                 "timestamp": gcp_firestore.SERVER_TIMESTAMP
@@ -227,7 +227,7 @@ class FirebaseClient:
     async def log_feedback(self, data: dict):
         try:
             feedback_ref = self.db.collection('users').document(data['user_id']).collection('feedback')
-            feedback_ref.add({
+            await asyncio.to_thread(feedback_ref.add, {
                 "appliance": data['appliance_name'],
                 "was_correct": data['actual_state'] == data['predicted_state'],
                 "actual_state": data['actual_state'],
@@ -241,10 +241,8 @@ class FirebaseClient:
     async def update_single_appliance_prob(self, user_id: str, app_name: str, new_prob: float, is_night: bool = False):
         try:
             app_ref = self.db.collection('users').document(user_id).collection('appliances').document(app_name)
-            if is_night:
-                app_ref.update({"prob_night": new_prob})
-            else:
-                app_ref.update({"prob_day": new_prob})
+            field = "prob_night" if is_night else "prob_day"
+            await asyncio.to_thread(app_ref.update, {field: new_prob})
             AppLog.info("FIRESTORE_UPDATE", f"Updated {app_name} probability (night={is_night}) to {new_prob}")
         except Exception as e:
             AppLog.error("FIRESTORE_UPDATE", f"Single update failed for {app_name}: {str(e)}")
@@ -252,7 +250,7 @@ class FirebaseClient:
     async def update_appliance_signature_meta(self, user_id: str, app_name: str, meta: dict):
         try:
             app_ref = self.db.collection('users').document(user_id).collection('appliances').document(app_name)
-            app_ref.update(meta)
+            await asyncio.to_thread(app_ref.update, meta)
             AppLog.info("FIRESTORE_META", f"Updated signature metadata for {app_name}: {meta}")
         except Exception as e:
             AppLog.error("FIRESTORE_META", f"Meta update failed for {app_name}: {str(e)}")
@@ -270,7 +268,8 @@ class FirebaseClient:
                                  .where(filter=gcp_firestore.FieldFilter('timestamp', '<=', end_date))
             
             docs_list = []
-            for doc in query.stream():
+            docs_stream = await asyncio.to_thread(lambda: list(query.stream()))
+            for doc in docs_stream:
                 docs_list.append(doc.to_dict())
                 
             if not docs_list:
@@ -284,9 +283,41 @@ class FirebaseClient:
             AppLog.error("FIRESTORE_READ", f"Telemetry fetch failed: {str(e)}")
             return []
 
+    async def get_historical_telemetry_with_timestamps(self, unit_id: str, month: int, year: int, block_id: str = None):
+        import calendar
+        try:
+            telemetry_ref = self.db.collection('users').document(unit_id).collection('telemetry')
+            
+            start_date = datetime.datetime(year, month, 1, tzinfo=datetime.timezone.utc)
+            last_day = calendar.monthrange(year, month)[1]
+            end_date = datetime.datetime(year, month, last_day, 23, 59, 59, tzinfo=datetime.timezone.utc)
+            
+            query = telemetry_ref.where(filter=gcp_firestore.FieldFilter('timestamp', '>=', start_date)) \
+                                 .where(filter=gcp_firestore.FieldFilter('timestamp', '<=', end_date))
+            
+            docs_list = []
+            docs_stream = await asyncio.to_thread(lambda: list(query.stream()))
+            for doc in docs_stream:
+                doc_data = doc.to_dict()
+                if 'wattage' in doc_data and 'timestamp' in doc_data:
+                    docs_list.append({
+                        'wattage': float(doc_data['wattage']),
+                        'timestamp': doc_data['timestamp']
+                    })
+                    
+            if not docs_list:
+                return []
+                
+            docs_list.sort(key=lambda x: x.get('timestamp', start_date))
+            return docs_list
+        except Exception as e:
+            AppLog.error("FIRESTORE_READ", f"Telemetry fetch with timestamps failed: {str(e)}")
+            return []
+
     async def get_user_data(self, user_id: str):
         try:
-            doc = self.db.collection('users').document(user_id).get()
+            doc_ref = self.db.collection('users').document(user_id)
+            doc = await asyncio.to_thread(doc_ref.get)
             return doc.to_dict() if doc.exists else None
         except Exception as e:
             AppLog.error("FIRESTORE_READ", f"Failed to get user data for {user_id}: {str(e)}")
@@ -294,7 +325,8 @@ class FirebaseClient:
 
     async def get_user_role(self, user_id: str):
         try:
-            doc = self.db.collection('users').document(user_id).get()
+            doc_ref = self.db.collection('users').document(user_id)
+            doc = await asyncio.to_thread(doc_ref.get)
             if doc.exists:
                 role = doc.to_dict().get('role', 'student')
                 AppLog.info("FIRESTORE_ROLE", f"User {user_id} has role: {role}")
@@ -307,20 +339,19 @@ class FirebaseClient:
 
     async def get_monthly_consumption(self, user_id: str, month: int, year: int) -> float:
         try:
-            # First, check for a staff-submitted or batch disaggregation result for this month.
-            # This is the most authoritative source for a billing baseline.
             month_id = f"{year}-{month:02d}"
-            billing_doc = self.db.collection('users').document(user_id) \
-                .collection('billing_cycles').document(month_id).get()
+            billing_doc_ref = self.db.collection('users').document(user_id) \
+                .collection('billing_cycles').document(month_id)
+            billing_doc = await asyncio.to_thread(billing_doc_ref.get)
             
             if billing_doc.exists:
                 data = billing_doc.to_dict()
                 return float(data.get('total_consumption_kwh', 0.0))
 
-            # Fallback to the stats accumulator (usually for real-time increments).
             doc_id = f"{year}_{month}"
-            doc = self.db.collection('users').document(user_id) \
-                .collection('stats').document(doc_id).get()
+            doc_ref = self.db.collection('users').document(user_id) \
+                .collection('stats').document(doc_id)
+            doc = await asyncio.to_thread(doc_ref.get)
             
             if doc.exists:
                 return float(doc.to_dict().get('total_kwh', 0.0))
@@ -335,7 +366,7 @@ class FirebaseClient:
             doc_id = f"{year}_{month}"
             doc_ref = self.db.collection('users').document(user_id).collection('stats').document(doc_id)
             
-            doc_ref.set({
+            await asyncio.to_thread(doc_ref.set, {
                 "total_kwh": gcp_firestore.Increment(amount),
                 "last_updated": gcp_firestore.SERVER_TIMESTAMP
             }, merge=True)

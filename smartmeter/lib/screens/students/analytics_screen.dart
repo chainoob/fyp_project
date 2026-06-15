@@ -112,6 +112,39 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     final staticReport = provider.currentReport;
     final double targetEnergyGoal = 300.0; 
 
+    final Map<String, String> nameToTypeMap = {};
+    for (var app in applianceProvider.appliances) {
+      nameToTypeMap[app.name.toLowerCase().trim()] = app.type;
+    }
+
+    final Map<String, double> groupedBreakdown = {};
+    final Map<String, double> groupedBenchmark = {};
+    List<MapEntry<String, double>> chartEntries = [];
+
+    if (staticReport != null) {
+      staticReport.applianceBreakdown.forEach((key, value) {
+        final String keyLower = key.toLowerCase().trim();
+        final String type = nameToTypeMap[keyLower] ?? key;
+        final String normalizedType = type.isNotEmpty 
+            ? (type[0].toUpperCase() + type.substring(1)) 
+            : 'Unknown';
+        groupedBreakdown[normalizedType] = (groupedBreakdown[normalizedType] ?? 0.0) + value;
+      });
+
+      staticReport.benchmarkBreakdown.forEach((key, value) {
+        final String keyLower = key.toLowerCase().trim();
+        final String type = nameToTypeMap[keyLower] ?? key;
+        final String normalizedType = type.isNotEmpty 
+            ? (type[0].toUpperCase() + type.substring(1)) 
+            : 'Unknown';
+        groupedBenchmark[normalizedType] = (groupedBenchmark[normalizedType] ?? 0.0) + value;
+      });
+
+      chartEntries = groupedBreakdown.entries
+          .map((e) => MapEntry(e.key, e.value.toDouble()))
+          .toList();
+    }
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
@@ -152,9 +185,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
             _buildBreakdownCard(
               staticReport.summary.totalConsumption, 
-              staticReport.applianceBreakdown.entries.map((e) => MapEntry(e.key, e.value.toDouble())).toList(), 
+              chartEntries, 
               staticReport.summary.keyIssue,
-              staticReport.benchmarkBreakdown,
+              groupedBenchmark,
             ),
             const SizedBox(height: 24),
           ] else ...[

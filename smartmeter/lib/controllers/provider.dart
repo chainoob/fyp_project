@@ -504,22 +504,41 @@ class EnergyProvider extends ChangeNotifier {
   String? errorMessage;
 
   Map<String, double?> manualOverrides = {};
+  Map<String, bool> localSwitches = {};
 
   EnergyProvider(this._repository);
 
   Map<String, double> get applianceBreakdown => currentReport?.applianceBreakdown ?? {};
 
-  void updateManualOverride(String applianceName, bool isOn) {
+  Future<void> updateManualOverride(String applianceName, String applianceType, bool isOn) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    final bool wasOn = localSwitches[applianceName] ?? false;
+
+    // Optimistic Update
+    localSwitches[applianceName] = isOn;
     manualOverrides[applianceName] = isOn ? 1.0 : 0.0;
-    if (uid != null) {
-      _repository.saveManualOverrides(uid, manualOverrides);
-    }
     notifyListeners();
+
+    try {
+      await _repository.saveManualOverrides(uid, manualOverrides);
+      await _repository.toggleUsageSession(uid, applianceName, applianceType, isOn);
+    } catch (e, stack) {
+      // Rollback on error
+      localSwitches[applianceName] = wasOn;
+      manualOverrides[applianceName] = wasOn ? 1.0 : 0.0;
+      notifyListeners();
+      AppLog.error("Manual Override Toggle Failure", e, stack);
+      rethrow;
+    }
   }
 
   void syncManualOverrides(Map<String, double?> overrides) {
     manualOverrides = Map<String, double?>.from(overrides);
+    overrides.forEach((key, val) {
+      localSwitches[key] = val == 1.0;
+    });
     notifyListeners();
   }
 

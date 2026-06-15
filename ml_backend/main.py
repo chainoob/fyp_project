@@ -210,7 +210,7 @@ def run_aggregation(month: int, year: int, target_id: str | None = None) -> dict
 
         user_ref = db.db.collection('users').document(entity_id)
         month_ref = user_ref.collection('billing_cycles').document(month_id)
-        daily_ref = month_ref.collection('daily_disaggregations').document(day_id)
+        daily_ref = month_ref.collection('daily_disaggregations').document(month_id)
 
         batch.set(user_ref, {
             "profile": {"role": "system_aggregate"},
@@ -318,6 +318,22 @@ async def process_realtime_telemetry(request: DisaggregationRequest, background_
         logger.error(f"Real-time pipeline failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal processing error on streaming window.")
 
+async def calibrate_user_behavioral_probabilities(user_id: str, student_load: float):
+    try:
+        appliances = await db.get_user_appliances(user_id)
+        if not appliances:
+            return
+        
+        refined_weights = await asyncio.to_thread(
+            optimizer.refine, appliances, student_load
+        )
+        
+        if refined_weights:
+            await db.update_appliance_weights(user_id, appliances, refined_weights)
+            logger.info(f"Behavioral calibration complete for {user_id}. Refined {len(refined_weights)} appliance weights.")
+    except Exception as e:
+        logger.error(f"Behavioral calibration failed for {user_id}: {e}", exc_info=True)
+
 @app.post("/api/v1/disaggregations")
 async def trigger_batch_disaggregation(request: BatchDisaggregationRequest, background_tasks: BackgroundTasks, token: dict = Depends(verify_firebase_token)):
     try:
@@ -362,9 +378,10 @@ async def trigger_batch_disaggregation(request: BatchDisaggregationRequest, back
             hourly_context=hourly_profile
         )
 
-        # Persist student-level disaggregation results
+        # Persist student-level disaggregation results and queue behavioral calibration
         for p in payloads:
             background_tasks.add_task(db.save_disaggregation_result, p)
+            background_tasks.add_task(calibrate_user_behavioral_probabilities, p['userId'], p['estimated_load'])
 
         # Trigger multi-tier aggregation background task
         background_tasks.add_task(run_aggregation, request.month, request.year)
@@ -378,9 +395,70 @@ async def trigger_batch_disaggregation(request: BatchDisaggregationRequest, back
 async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request, block_id_override=None, hourly_context=None):
     logger.info(f"Pipeline Input - Readings Length: {len(readings)}")
     
+    from services.validation_guard import sweep_and_load_sessions, compute_deterministic_load_matrix, get_active_manual_wattage
+    
+    sessions = await sweep_and_load_sessions(db, student_uids, request.month, request.year)
+    deterministic_matrix = compute_deterministic_load_matrix(sessions, request.month, request.year)
+    
+    manual_kwh_by_student = {}
+    student_manual_diurnal = {}
+    
+    for uid in student_uids:
+        manual_kwh_by_student[uid] = {}
+        student_manual_diurnal[uid] = {str(h): 0.0 for h in range(24)}
+        
+        student_sessions = [s for s in sessions if s['user_id'] == uid]
+        for s in student_sessions:
+            app_type = s['type'].capitalize()
+            start_time = s['start_time']
+            end_time = s['end_time']
+            wattage = s['wattage']
+            
+            if app_type not in manual_kwh_by_student[uid]:
+                manual_kwh_by_student[uid][app_type] = 0.0
+            
+            _, last_day = calendar.monthrange(request.year, request.month)
+            start_month_dt = datetime.datetime(request.year, request.month, 1, tzinfo=datetime.timezone.utc)
+            for hour_idx in range(last_day * 24):
+                hour_start = start_month_dt + datetime.timedelta(hours=hour_idx)
+                hour_end = hour_start + datetime.timedelta(hours=1)
+                
+                overlap_start = max(start_time, hour_start)
+                overlap_end = min(end_time, hour_end)
+                
+                if overlap_start < overlap_end:
+                    overlap_duration_hr = (overlap_end - overlap_start).total_seconds() / 3600.0
+                    
+                    elapsed_hours = max(0.0, (hour_start - start_time).total_seconds() / 3600.0)
+                    hour_of_day_num = hour_start.hour
+                    tod_prob = s.get('tod_probs', {}).get(hour_of_day_num, 0.0)
+                    
+                    decay_factor = 0.1 * (1.0 - tod_prob)
+                    C_m = max(0.0, 0.95 - decay_factor * elapsed_hours)
+                    
+                    kwh_hour = (wattage * overlap_duration_hr * C_m) / 1000.0
+                    
+                    hour_of_day = str(hour_start.hour)
+                    student_manual_diurnal[uid][hour_of_day] += kwh_hour
+                    manual_kwh_by_student[uid][app_type] += kwh_hour
+
+    telemetry_raw = await db.get_historical_telemetry_with_timestamps(unit_id, request.month, request.year, block_id=request.block_id)
+    
+    cleaned_readings = []
+    if telemetry_raw:
+        for item in telemetry_raw:
+            raw_w = item['wattage']
+            t = item['timestamp']
+            
+            manual_w = get_active_manual_wattage(sessions, t)
+            cleaned_w = max(0.0, raw_w - manual_w)
+            cleaned_readings.append(cleaned_w)
+    else:
+        cleaned_readings = readings
+
     max_ml_points = 2000
-    reduction_factor = max(1, len(readings) // max_ml_points)
-    decimated_readings = readings[::reduction_factor]
+    reduction_factor = max(1, len(cleaned_readings) // max_ml_points)
+    decimated_readings = cleaned_readings[::reduction_factor]
 
     np_readings = np.array(decimated_readings, dtype=np.float32)
     series_readings = pd.Series(np_readings).rolling(window=5, min_periods=1, center=True).median().dropna()
@@ -424,8 +502,9 @@ async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request, b
                 current_hour=12
             )
             
-            # Enforce minimum appliance baseline to prevent zero-value scaling
             raw_usage = max(raw_usage, 0.05)
+            proven_kwh = manual_kwh_by_student[uid].get(app_type, 0.0)
+            raw_usage += proven_kwh
             breakdown[app_type] = breakdown.get(app_type, 0.0) + raw_usage
 
         # Fallback to standard baseline if tenant has no registered appliances
@@ -459,22 +538,32 @@ async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request, b
         recommendations = generate_recommendations(scaled_breakdown)
         benchmark_breakdown = {k: round(v * 0.9, 2) for k, v in scaled_breakdown.items()}
 
+        student_manual_hourly = student_manual_diurnal.get(uid, {str(h): 0.0 for h in range(24)})
+        manual_load = sum(student_manual_hourly.values())
+        ai_load = max(0.0, student_load - manual_load)
+
         final_hourly = {}
         peak_hour = "0"
         peak_val = 0.0
         
         if hourly_context:
             profile_total = sum(hourly_context.values())
-            scale = (student_load / profile_total) if profile_total > 0 else 0
+            scale = (ai_load / profile_total) if profile_total > 0 else 0
             for h, v in hourly_context.items():
                 h_str = str(h)
-                h_val = round(v * scale, 3)
+                h_val = round(v * scale + student_manual_hourly.get(h_str, 0.0), 3)
                 final_hourly[h_str] = h_val
                 if h_val > peak_val:
                     peak_val = h_val
                     peak_hour = h_str
         else:
-            final_hourly = {str(h): round(student_load / 24, 3) for h in range(24)}
+            for h in range(24):
+                h_str = str(h)
+                h_val = round(ai_load / 24 + student_manual_hourly.get(h_str, 0.0), 3)
+                final_hourly[h_str] = h_val
+                if h_val > peak_val:
+                    peak_val = h_val
+                    peak_hour = h_str
 
         payloads.append({
             "userId": uid, 

@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:smartmeter/models/app_model.dart';
 import 'package:smartmeter/controllers/provider.dart';
 import 'package:smartmeter/config/theme.dart';
 import 'package:smartmeter/widgets/reusable_widget.dart';
@@ -26,7 +27,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
 
     final String uid = appUser.uid;
-    final List<String> registeredAppliances = applianceProvider.appliances.map((a) => a.name).toList();
+    final List<Appliance> registeredAppliances = applianceProvider.appliances;
 
     return SafeArea(
       child: StreamBuilder<DocumentSnapshot>(
@@ -210,7 +211,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _buildManualToggleCard(Map<String, dynamic> dbOverrides, List<String> appliances, EnergyProvider provider) {
+  IconData _getIconForType(String type) {
+    switch (type.toLowerCase()) {
+      case 'fan': return Icons.air_rounded;
+      case 'laptop': return Icons.laptop_chromebook_rounded;
+      case 'charger': return Icons.battery_charging_full_rounded;
+      case 'lamp': case 'light': return Icons.lightbulb_outline_rounded;
+      case 'iron': return Icons.iron_rounded;
+      case 'kettle': return Icons.coffee_maker_rounded;
+      case 'printer': return Icons.print_rounded;
+      default: return Icons.power_rounded;
+    }
+  }
+
+  Widget _buildManualToggleCard(Map<String, dynamic> dbOverrides, List<Appliance> appliances, EnergyProvider provider) {
     if (appliances.isEmpty) {
       return Card(
         color: AppTheme.surface,
@@ -223,32 +237,123 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
 
     return Card(
-      color: AppTheme.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: const BorderSide(color: Colors.white12)),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-        child: Column(
-          children: appliances.map((appName) {
-            final bool isCurrentlyOn = (dbOverrides[appName] ?? 0.0) == 1.0;
+      color: Colors.transparent,
+      elevation: 0,
+      child: Column(
+        children: appliances.map((app) {
+          final String appName = app.name;
+          final String appType = app.type;
+          if (!provider.localSwitches.containsKey(appName)) {
+            provider.localSwitches[appName] = (dbOverrides[appName] ?? 0.0) == 1.0;
+          }
+          final bool isCurrentlyOn = provider.localSwitches[appName]!;
 
-            return SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text(appName, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500)),
-              subtitle: Text(
-                isCurrentlyOn ? "Forced State: ON" : "Forced State: OFF",
-                style: TextStyle(color: isCurrentlyOn ? AppTheme.ecoTeal : Colors.white38, fontSize: 11),
-              ),
-              value: isCurrentlyOn,
-              activeThumbColor: AppTheme.ecoTeal,
-              onChanged: (bool value) {
-                provider.updateManualOverride(appName, value); 
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text("$appName sequence forced to ${value ? 'ON' : 'OFF'}.")),
-                );
-              },
-            );
-          }).toList(),
-        ),
+          return Container(
+            margin: const EdgeInsets.only(bottom: 8.0),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.03),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: isCurrentlyOn 
+                        ? AppTheme.ecoTeal.withValues(alpha: 0.1) 
+                        : Colors.white.withValues(alpha: 0.05),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    _getIconForType(appType),
+                    color: isCurrentlyOn ? AppTheme.ecoTeal : Colors.white38,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        appName,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.white12,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              appType.toUpperCase(),
+                              style: const TextStyle(
+                                color: Colors.white54,
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            isCurrentlyOn ? "Forced: ON" : "Forced: OFF",
+                            style: TextStyle(
+                              color: isCurrentlyOn ? AppTheme.ecoTeal : Colors.white38,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              Switch(
+                  value: isCurrentlyOn,
+                  activeTrackColor: AppTheme.ecoTeal.withValues(alpha: 0.3),
+                  activeThumbColor: AppTheme.ecoTeal,
+                  inactiveThumbColor: Colors.grey,
+                  inactiveTrackColor: Colors.white10,
+                  onChanged: (bool value) async {
+                    try {
+                      await provider.updateManualOverride(appName, appType, value);
+                      
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text("$appName ($appType) forced to ${value ? 'ON' : 'OFF'}.", 
+                              style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)
+                            ),
+                            backgroundColor: AppTheme.ecoTeal,
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                    } catch (error) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text("Sync Failure: Database update rejected.", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                            backgroundColor: Colors.redAccent,
+                          ),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ],
+            ),
+          );
+        }).toList(),
       ),
     );
   }

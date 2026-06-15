@@ -8,7 +8,7 @@ router = APIRouter()
 vision_client = vision.ImageAnnotatorClient()
 
 VALID_APPLIANCES = {"kettle", "iron", "lamp", "laptop", "charger", "fan", "printer"}
-CONFIDENCE_THRESHOLD = 0.60 # Slightly lowered to increase recall, handled by mapping logic
+CONFIDENCE_THRESHOLD = 0.60 
 
 @router.post("/api/v1/recognize-appliance")
 async def recognize_appliance(file: UploadFile = File(...), token: dict = Depends(verify_firebase_token)):
