@@ -229,9 +229,11 @@ def run_aggregation(month: int, year: int, target_id: str | None = None) -> dict
             "recommendations": doc_payload["summary"]["recommendations"],
             "anomalies": doc_payload["anomalies"],
             "benchmark_breakdown": doc_payload["breakdown"],
+            "appliance_breakdown": doc_payload["breakdown"],
             "monthly_appliance_breakdown": doc_payload["breakdown"],
-            "monthly_hourly_usage": doc_payload["hourly"]
-        }, merge=True)
+            "hourly_usage": doc_payload["hourly"],
+            "monthly_hourly_usage": doc_payload["hourly"],
+        })
 
         # 3. Daily Entry
         batch.set(daily_ref, {
@@ -242,7 +244,7 @@ def run_aggregation(month: int, year: int, target_id: str | None = None) -> dict
             "kpis": doc_payload["kpis"],
             "summary": doc_payload["summary"],
             "scope": scope
-        }, merge=True)
+        })
         
         write_count += 3
 

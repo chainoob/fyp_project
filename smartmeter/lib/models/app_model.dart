@@ -79,6 +79,8 @@ class Appliance {
   final List<double> states;    
   final int maxStateIndex;     
 
+  final String? imageBase64;
+ 
   Appliance({
     required this.id,
     required this.name,
@@ -91,8 +93,9 @@ class Appliance {
     required this.status,
     required this.states,
     required this.maxStateIndex,
+    this.imageBase64,
   });
-
+ 
   Map<String, dynamic> toMap() {
     return {
       'name': name,
@@ -105,14 +108,15 @@ class Appliance {
       'status': status,
       'states': states,
       'max_state_index': maxStateIndex,
+      'imageBase64': imageBase64,
       'updatedAt': FieldValue.serverTimestamp(),
     };
   }
-
+ 
   factory Appliance.fromFirestore(String id, Map<String, dynamic> data) {
     final List<dynamic> rawStates = data['states'] ?? [0.0, (data['wattage'] as num?)?.toDouble() ?? 0.0];
     final List<double> parsedStates = rawStates.map((e) => (e as num).toDouble()).toList();
-
+ 
     return Appliance(
       id: id,
       name: data['name'] ?? '',
@@ -125,6 +129,7 @@ class Appliance {
       status: data['status'] ?? 'pending',
       states: parsedStates,                      
       maxStateIndex: (data['max_state_index'] as num?)?.toInt() ?? (parsedStates.length - 1), 
+      imageBase64: data['imageBase64'],
     );
   }
 }

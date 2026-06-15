@@ -43,19 +43,34 @@ async def recognize_appliance(file: UploadFile = File(...), token: dict = Depend
             "laptop": ["laptop", "computer", "notebook", "netbook", "personal computer"],
             "charger": ["charger", "adapter", "cable", "wire", "electronic engineering", "power supply"],
             "fan": ["fan", "mechanical fan", "cooling", "electric fan"],
-            "printer": ["printer", "peripheral", "office equipment", "computer hardware"]
+            "printer": ["printer", "inkjet", "laserjet", "copier", "multi-function printer"]
         }
 
         # Filter detected labels against rules
+        matches = {}
         for label in labels:
             desc = label.description.lower()
             for app, synonyms in MAPPING_RULES.items():
                 if any(syn in desc for syn in synonyms) and label.score >= CONFIDENCE_THRESHOLD:
-                    detected = app.capitalize()
-                    confidence = label.score
-                    break
-            if detected != "Unknown":
-                break
+                    if app not in matches or label.score > matches[app]:
+                        matches[app] = label.score
+
+        # Disambiguation heuristic: Laptop vs Printer
+        if "laptop" in matches and "printer" in matches:
+            has_explicit_laptop = any(
+                any(term in label.description.lower() for term in ["laptop", "notebook", "netbook"])
+                for label in labels if label.score >= CONFIDENCE_THRESHOLD
+            )
+            if has_explicit_laptop:
+                detected = "Laptop"
+                confidence = matches["laptop"]
+            else:
+                detected = "Laptop" if matches["laptop"] >= matches["printer"] else "Printer"
+                confidence = matches[detected.lower()]
+        elif matches:
+            best_app = max(matches, key=matches.get)
+            detected = best_app.capitalize()
+            confidence = matches[best_app]
 
         logger.info(f"Vision Recognition Result: {detected} (Confidence: {confidence:.2f})")
 

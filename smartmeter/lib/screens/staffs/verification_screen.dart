@@ -1,5 +1,6 @@
 // smartmeter/lib/screens/staff/verification_screen.dart
 
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:smartmeter/config/theme.dart';
@@ -135,6 +136,49 @@ class _ApplianceActionTileState extends State<_ApplianceActionTile> {
   }
 }
 
+  void _showImageDialog(BuildContext context, String base64Str) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppBar(
+              title: Text(widget.app.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              automaticallyImplyLeading: false,
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(ctx),
+                )
+              ],
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+            ),
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.6,
+              ),
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                child: Image.memory(
+                  base64Decode(base64Str),
+                  fit: BoxFit.contain,
+                  errorBuilder: (c, e, s) => Container(
+                    height: 200,
+                    alignment: Alignment.center,
+                    child: const Text("Failed to load image"),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // Map appliance attributes to discrete UI components.
@@ -145,7 +189,28 @@ class _ApplianceActionTileState extends State<_ApplianceActionTile> {
       ),
       child: Row(
         children: [
-          const Icon(Icons.electrical_services, color: Colors.grey, size: 20),
+          if (widget.app.imageBase64 != null)
+            GestureDetector(
+              onTap: () => _showImageDialog(context, widget.app.imageBase64!),
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.withValues(alpha: 0.3)),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.memory(
+                    base64Decode(widget.app.imageBase64!),
+                    fit: BoxFit.cover,
+                    errorBuilder: (ctx, err, stack) => const Icon(Icons.broken_image, size: 20, color: Colors.red),
+                  ),
+                ),
+              ),
+            )
+          else
+            const Icon(Icons.electrical_services, color: Colors.grey, size: 20),
           const SizedBox(width: 12),
           Expanded(
             child: Column(

@@ -233,7 +233,7 @@ class ApplianceProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> add(String name, String type, int watts, String room) async {
+  Future<void> add(String name, String type, int watts, String room, {String? imageBase64}) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) throw Exception("User not logged in");
 
@@ -256,6 +256,7 @@ class ApplianceProvider extends ChangeNotifier {
       status: 'pending',     
       states: calculatedStates,
       maxStateIndex: calculatedMaxIndex,
+      imageBase64: imageBase64,
     );
 
     await _repo.saveAppliance(safeUid, newAppliance);

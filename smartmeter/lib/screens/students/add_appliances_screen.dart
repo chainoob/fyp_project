@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -146,22 +147,35 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+    
+    if (_image == null) {
+      _showSnackBar("Image scanning is mandatory to register an appliance.", isError: true);
+      return;
+    }
 
     FocusScope.of(context).unfocus();
 
     setState(() => _isProcessing = true);
 
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final provider = context.read<ApplianceProvider>();
+
     try {
-      await context.read<ApplianceProvider>().add(
+      final bytes = await _image!.readAsBytes();
+      final String imageBase64 = base64Encode(bytes);
+
+      await provider.add(
         _nameCtrl.text.trim(),
         _selectedType!, 
         int.parse(_wattCtrl.text.trim()),
         _roomCtrl.text.trim(),
+        imageBase64: imageBase64,
       );
 
       if (mounted) {
-        Navigator.pop(context); 
-        ScaffoldMessenger.of(context).showSnackBar(
+        navigator.pop(); 
+        messenger.showSnackBar(
             const SnackBar(
               content: Text("Device submitted for verification"),
               backgroundColor: AppTheme.ecoTeal,
@@ -169,7 +183,13 @@ class _AddApplianceScreenState extends State<AddApplianceScreen> {
         );
       }
     } catch (e) {
-      _showSnackBar("Submission Failed: $e", isError: true);
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text("Submission Failed: $e"),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }

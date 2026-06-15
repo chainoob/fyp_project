@@ -173,7 +173,7 @@ class FirebaseClient:
                 "benchmark_breakdown": cleaned_payload.get('benchmark_breakdown', {}),
                 "appliance_breakdown": cleaned_payload.get('breakdown', {}),
                 "hourly_usage": cleaned_payload.get('hourlyUsage', {}),
-            }, merge=True)
+            })
             
             # 3. Insert Daily Granular Array
             daily_ref = month_ref.collection('daily_disaggregations').document(month_id)
@@ -183,7 +183,7 @@ class FirebaseClient:
                 "appliance_breakdown": cleaned_payload.get('breakdown', {}),
                 "method": cleaned_payload.get('methodApplied', 'MCMC'),
                 "confidence_scores": cleaned_payload.get('confidence_scores', {})
-            }, merge=True)
+            })
             
             AppLog.info("FIRESTORE_SAVE", f"SUCCESS: Partitioned hierarchical dual-write completed for {user_id} ({month_id}/{day_id})")
 
