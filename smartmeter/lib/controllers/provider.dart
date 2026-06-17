@@ -171,11 +171,25 @@ class ApplianceProvider extends ChangeNotifier {
   List<Appliance> _appliances = [];
   List<MapEntry<String, Appliance>> _pendingQueue = [];
   StreamSubscription? _streamSub;
+  StreamSubscription? _authSub;
 
-  ApplianceProvider(this._repo);
+  ApplianceProvider(this._repo) {
+    _authSub = _repo.authStateChanges.listen((user) {
+      if (user != null) {
+        if (user.role == 'student') {
+          subscribeToUser(user.uid);
+        } else if (user.role == 'staff') {
+          subscribeToQueue();
+        }
+      } else {
+        clear();
+      }
+    }, onError: (e) => AppLog.error("Appliance Auth Listener Failure", e));
+  }
 
   List<Appliance> get appliances => _appliances;
   List<MapEntry<String, Appliance>> get pendingQueue => _pendingQueue;
+  bool get isSubscribed => _streamSub != null;
 
   final ApiService _apiService = ApiService();
   bool _isAnalyzing = false;
@@ -228,6 +242,7 @@ class ApplianceProvider extends ChangeNotifier {
 
   void clear() {
     _streamSub?.cancel();
+    _streamSub = null;
     _appliances = [];
     _pendingQueue = [];
     notifyListeners();
@@ -308,6 +323,7 @@ class ApplianceProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _authSub?.cancel();
     _streamSub?.cancel();
     super.dispose();
   }
@@ -316,7 +332,21 @@ class ApplianceProvider extends ChangeNotifier {
 class GoalProvider with ChangeNotifier {
   final EnergyRepository _repo;
   StreamSubscription? _sub;
-  GoalProvider(this._repo);
+  StreamSubscription? _authSub;
+
+  GoalProvider(this._repo) {
+    _authSub = _repo.authStateChanges.listen((user) {
+      if (user != null) {
+        if (user.role == 'student') {
+          subscribeToStudent(user.uid);
+        } else if (user.role == 'staff') {
+          subscribeToCampus();
+        }
+      } else {
+        clear();
+      }
+    }, onError: (e) => AppLog.error("Goal Auth Listener Failure", e));
+  }
 
   double _target = 0;
   double _current = 0;
@@ -327,6 +357,7 @@ class GoalProvider with ChangeNotifier {
   double get current => _current;
   double get progress => _target > 0 ? (_current / _target).clamp(0.0, 1.0) : 0.0;
   bool get isOverBudget => _target > 0 && _current > _target;
+  bool get isSubscribed => _sub != null;
 
   void subscribeToStudent(String uid) {
     _isCampusMode = false;
@@ -354,6 +385,7 @@ class GoalProvider with ChangeNotifier {
 
   void clear() {
     _sub?.cancel();
+    _sub = null;
     _target = 0;
     _current = 0;
     _currentUserId = null;
@@ -370,6 +402,7 @@ class GoalProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    _authSub?.cancel();
     _sub?.cancel();
     super.dispose();
   }

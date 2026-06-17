@@ -347,7 +347,17 @@ async def trigger_batch_disaggregation(request: BatchDisaggregationRequest, back
         readings = await db.get_historical_telemetry(source_id, request.month, request.year, block_id=request.block_id)
         
         if not readings or len(readings) < 5:
-             return format_api_response(False, message="Insufficient historical telemetry for disaggregation.", status_code=400)
+            logger.info(f"Telemetry missing or insufficient ({len(readings) if readings else 0} records). Attempting automatic UK-DALE seeding fallback.")
+            try:
+                seeded_count = await perform_ukdale_seeding(source_id, request.month, request.year)
+                if seeded_count > 0:
+                    logger.info(f"Successfully auto-seeded {seeded_count} documents for user {source_id}.")
+                    readings = await db.get_historical_telemetry(source_id, request.month, request.year, block_id=request.block_id)
+            except Exception as seed_err:
+                logger.error(f"Automatic UK-DALE seeding fallback failed: {seed_err}", exc_info=True)
+                
+            if not readings or len(readings) < 5:
+                return format_api_response(False, message="Insufficient historical telemetry for disaggregation.", status_code=400)
 
         student_docs = db.db.collection('users').where(filter=gcp_firestore.FieldFilter('assignedUnitId', '==', source_id)).stream()
         student_uids = [doc.id for doc in student_docs]
@@ -567,6 +577,96 @@ async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request, b
                     peak_val = h_val
                     peak_hour = h_str
 
+        # Calculate daily breakdowns for the student
+        daily_breakdowns = []
+        _, last_day = calendar.monthrange(request.year, request.month)
+        
+        # Calculate daily shares of telemetry
+        daily_telemetry_wh = {d: 0.0 for d in range(1, last_day + 1)}
+        if telemetry_raw:
+            for item in telemetry_raw:
+                t = item['timestamp']
+                if isinstance(t, str):
+                    t = datetime.datetime.fromisoformat(t.replace('Z', '+00:00'))
+                if t.month == request.month and t.year == request.year:
+                    daily_telemetry_wh[t.day] += item.get('wattage', 0.0)
+        else:
+            readings_per_day = len(readings) // last_day if last_day > 0 else 1
+            for d in range(1, last_day + 1):
+                start_idx = (d - 1) * readings_per_day
+                end_idx = d * readings_per_day
+                day_readings = readings[start_idx:end_idx]
+                daily_telemetry_wh[d] = sum(day_readings) if day_readings else 0.0
+                
+        total_telemetry_wh = sum(daily_telemetry_wh.values())
+        student_sessions = [s for s in sessions if s['user_id'] == uid]
+        
+        # Calculate monthly appliance shares (proportional to total monthly breakdown)
+        monthly_total_kwh = sum(scaled_breakdown.values())
+        appliance_shares = {k: v / monthly_total_kwh for k, v in scaled_breakdown.items()} if monthly_total_kwh > 0 else {}
+        
+        for d in range(1, last_day + 1):
+            day_share = daily_telemetry_wh[d] / total_telemetry_wh if total_telemetry_wh > 0 else (1.0 / last_day)
+            student_daily_total = student_load * day_share
+            
+            # Compute manual overrides for this specific day
+            manual_kwh_today = {}
+            start_day_dt = datetime.datetime(request.year, request.month, d, tzinfo=datetime.timezone.utc)
+            end_day_dt = start_day_dt + datetime.timedelta(days=1)
+            
+            for s in student_sessions:
+                app_type = s['type'].capitalize()
+                start_time = s['start_time']
+                end_time = s['end_time']
+                wattage = s['wattage']
+                
+                # Check overlap of this session with the current day d
+                overlap_start = max(start_time, start_day_dt)
+                overlap_end = min(end_time, end_day_dt)
+                
+                if overlap_start < overlap_end:
+                    overlap_duration_hr = (overlap_end - overlap_start).total_seconds() / 3600.0
+                    elapsed_hours = max(0.0, (start_day_dt - start_time).total_seconds() / 3600.0)
+                    hour_of_day_num = start_day_dt.hour
+                    tod_prob = s.get('tod_probs', {}).get(hour_of_day_num, 0.0)
+                    decay_factor = 0.1 * (1.0 - tod_prob)
+                    C_m = max(0.0, 0.95 - decay_factor * elapsed_hours)
+                    
+                    kwh_today = (wattage * overlap_duration_hr * C_m) / 1000.0
+                    manual_kwh_today[app_type] = manual_kwh_today.get(app_type, 0.0) + kwh_today
+            
+            # Distribute remaining daily load
+            manual_total_today = sum(manual_kwh_today.values())
+            remaining_daily_kwh = max(0.0, student_daily_total - manual_total_today)
+            
+            appliance_breakdown_today = {}
+            for app, share in appliance_shares.items():
+                app_manual = manual_kwh_today.get(app, 0.0)
+                app_ai = remaining_daily_kwh * share
+                appliance_breakdown_today[app] = round(app_manual + app_ai, 3)
+            
+            # Ensure fallback in case no registered appliances
+            if not appliance_breakdown_today:
+                appliance_breakdown_today = {
+                    "Lamp": round(student_daily_total * 0.33, 3),
+                    "Charger": round(student_daily_total * 0.33, 3),
+                    "Fan": round(student_daily_total * 0.34, 3)
+                }
+            
+            # Compute daily hourly usage
+            daily_hourly_usage = {}
+            for h in range(24):
+                h_str = str(h)
+                profile_val = hourly_context.get(h_str, 1.0 / 24)
+                daily_hourly_usage[h_str] = round(student_daily_total * profile_val, 3)
+                
+            daily_breakdowns.append({
+                "day": d,
+                "appliance_breakdown": appliance_breakdown_today,
+                "manual_overrides": {k: round(v, 3) for k, v in manual_kwh_today.items()},
+                "hourly_usage": daily_hourly_usage
+            })
+
         payloads.append({
             "userId": uid, 
             "unitId": unit_id,
@@ -581,6 +681,7 @@ async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request, b
             "anomalies": [],
             "hourlyUsage": final_hourly,
             "timestamp": now.isoformat(),
+            "daily_breakdowns": daily_breakdowns,
             "summary": {
                 "totalConsumption": round(student_load, 2),
                 "keyIssue": recommendations[0] if recommendations else "Consumption nominal.",
@@ -829,117 +930,120 @@ async def handle_feedback(request: FeedbackRequest, token: dict = Depends(verify
     except Exception as e:
         return format_api_response(False, message=str(e))
 
-@app.post("/api/v1/dev/redd-seeds")
-async def seed_exact_synthetic_redd(request: SeedReddRequest, token: dict = Depends(verify_firebase_token)):
+async def perform_ukdale_seeding(user_id: str, month: int, year: int) -> int:
+    """Helper to seed UK-DALE dataset for a user, month, and year."""
+    # Dynamic path resolution to support local and Cloud Run volume mount environments
+    h5_file_path = "/mnt/datasets/ukdale.h5" 
+    if not os.path.exists(h5_file_path):
+        h5_file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "data", "ukdale.h5"))
+    
+    if not os.path.exists(h5_file_path):
+        logger.warning(f"UK-DALE H5 dataset file not found at {h5_file_path}. Cannot auto-seed.")
+        return 0
+
+    columns_to_read = {
+        'Lamp': '/building1/elec/meter42',
+        'Fan': '/building1/elec/meter7',
+        'Laptop': '/building1/elec/meter24',
+        'Charger': '/building1/elec/meter26',
+        'Kettle': '/building1/elec/meter11',
+        'Iron': '/building1/elec/meter37',
+        'Printer': '/building1/elec/meter36'
+    }
+
+    resampled_series = {}
+    
+    import tables
+    try:
+        with tables.open_file(h5_file_path, 'r') as f:
+            for col_name, h5_path in columns_to_read.items():
+                table_path = f"{h5_path}/table"
+                try:
+                    node = f.get_node(table_path)
+                    data = node.read()
+                    
+                    power_data = data['values_block_0'].flatten()
+                    timestamps = pd.to_datetime(data['index'], unit='ns', utc=True)
+                    
+                    raw_series = pd.Series(power_data, index=timestamps)
+                    
+                    # Downcast immediately to save memory and resample to 1h
+                    resampled = raw_series.astype('float32').resample('1h').mean().dropna()
+                    resampled_series[col_name] = resampled
+                    
+                    del raw_series
+                    gc.collect()
+                except Exception as node_err:
+                    logger.warning(f"Expected data table missing or failed to read at path: {table_path} - {node_err}")
+                    resampled_series[col_name] = pd.Series(dtype='float32')
+    except Exception as e:
+        logger.error(f"HDF5 Critical Ingestion Failure: {str(e)}")
+        raise e
+
+    df = pd.DataFrame(resampled_series)
+    df = df.ffill().fillna(0)
+    df['synthetic_mains'] = df.sum(axis=1)
+
+    target_start = datetime.datetime(year, month, 1, tzinfo=datetime.timezone.utc)
+    raw_start = df.index[0].tz_localize(datetime.timezone.utc) if df.index[0].tzinfo is None else df.index[0]
+    time_delta_offset = target_start - raw_start
+
+    df.index = df.index + time_delta_offset
+
+    del resampled_series
+    gc.collect()
+
+    batch = db.db.batch()
+    write_count = 0
+    total_written = 0
+
+    for timestamp, row in df.iterrows():
+        doc_ref = db.db.collection('users').document(user_id).collection('telemetry').document()
+        native_timestamp = timestamp.to_pydatetime()
+
+        batch.set(doc_ref, {
+            "wattage": float(row['synthetic_mains']),
+            "timestamp": native_timestamp,
+            "is_synthetic_redd": True,  # Maintained for system backward compatibility
+            "is_synthetic_ukdale": True,
+            "ground_truth": {
+                "Fan": float(row['Fan']),
+                "Laptop": float(row['Laptop']),
+                "Charger": float(row['Charger']),
+                "Lamp": float(row['Lamp']),
+                "Iron": float(row['Iron']),
+                "Kettle": float(row['Kettle']),
+                "Printer": float(row['Printer'])
+            }
+        })
+        
+        write_count += 1
+        total_written += 1
+        if write_count >= 400:  
+            await asyncio.to_thread(batch.commit)
+            batch = db.db.batch()
+            write_count = 0
+            
+    if write_count > 0:
+        await asyncio.to_thread(batch.commit)
+
+    del df
+    gc.collect()
+    
+    return total_written
+
+@app.post("/api/v1/dev/seed-synthetic-ukdale")
+async def seed_exact_synthetic_ukdale(request: SeedReddRequest, token: dict = Depends(verify_firebase_token)):
     try:
         staff_uid = token["uid"]
         is_staff = await db.get_user_role(staff_uid) == 'staff'
         validate_user_ownership(request.user_id, staff_uid, is_staff=is_staff)
 
-        h5_file_path = "/mnt/datasets/redd.h5" 
-        
-        columns_to_read = {
-            'Lamp': '/building1/elec/meter9',
-            'Fan': '/building1/elec/meter17',
-            'Laptop': '/building1/elec/meter15',
-            'Charger': '/building1/elec/meter16',
-            'Kettle': '/building1/elec/meter11',
-            'Iron': '/building1/elec/meter13',
-            'Printer': '/building1/elec/meter8'
-        }
-
-        resampled_series = {}
-        
-        try:
-            # OOM Fix: Sequential reading, manual garbage collection, float32 downcasting
-            with pd.HDFStore(h5_file_path, mode='r') as store:
-                for col_name, h5_path in columns_to_read.items():
-                    table_path = f"{h5_path}/table"
-                    
-                    if table_path in store:
-                        df_meter = store.get(table_path)
-                        
-                        if 'index' in df_meter.columns:
-                            df_meter.index = pd.to_datetime(df_meter['index'])
-                        elif 'timestamp' in df_meter.columns:
-                            df_meter.index = pd.to_datetime(df_meter['timestamp'])
-                        elif 'time' in df_meter.columns:
-                            df_meter.index = pd.to_datetime(df_meter['time'])
-                        elif isinstance(df_meter.index, pd.RangeIndex) and df_meter.iloc[:, 0].name == 'index':
-                            df_meter.index = pd.to_datetime(df_meter.iloc[:, 0])
-                        
-                        if 'active' in df_meter.columns:
-                            raw_series = df_meter['active']
-                        elif 'values' in df_meter.columns:
-                            raw_series = df_meter['values']
-                        else:
-                            raw_series = df_meter.iloc[:, -1]
-                        
-                        if not isinstance(raw_series.index, pd.DatetimeIndex):
-                            raise ValueError(f"Could not convert HDF5 index to DatetimeIndex for {col_name}.")
-
-                        # Downcast immediately to save memory
-                        resampled = raw_series.astype('float32').resample('1h').mean().dropna()
-                        resampled_series[col_name] = resampled
-                        
-                        # Aggressive memory cleanup
-                        del df_meter, raw_series
-                        gc.collect()
-                    else:
-                        logger.warning(f"Expected data table missing at path: {table_path}")
-                        resampled_series[col_name] = pd.Series(dtype='float32')
-        except Exception as e:
-            logger.error(f"HDF5 Critical Ingestion Failure: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Data storage read failure: {str(e)}")
-
-        df = pd.DataFrame(resampled_series)
-        df = df.ffill().fillna(0)
-        df['synthetic_mains'] = df.sum(axis=1)
-
-        target_start = datetime.datetime(request.year, request.month, 1, tzinfo=datetime.timezone.utc)
-        raw_start = df.index[0].tz_localize(datetime.timezone.utc) if df.index[0].tzinfo is None else df.index[0]
-        time_delta_offset = target_start - raw_start
-
-        df.index = df.index + time_delta_offset
-
-        del resampled_series
-        gc.collect()
-
-        batch = db.db.batch()
-        write_count = 0
-
-        for timestamp, row in df.iterrows():
-            doc_ref = db.db.collection('users').document(request.user_id).collection('telemetry').document()
-            native_timestamp = timestamp.to_pydatetime()
-
-            batch.set(doc_ref, {
-                "wattage": float(row['synthetic_mains']),
-                "timestamp": native_timestamp,
-                "is_synthetic_redd": True,
-                "ground_truth": {
-                    "Fan": float(row['Fan']),
-                    "Laptop": float(row['Laptop']),
-                    "Charger": float(row['Charger']),
-                    "Lamp": float(row['Lamp']),
-                    "Iron": float(row['Iron']),
-                    "Kettle": float(row['Kettle']),
-                    "Printer": float(row['Printer'])
-                }
-            })
+        seeded_count = await perform_ukdale_seeding(request.user_id, request.month, request.year)
+        if seeded_count == 0:
+            raise HTTPException(status_code=500, detail="No telemetry records seeded. Ensure H5 dataset exists.")
             
-            write_count += 1
-            if write_count >= 400:  
-                await asyncio.to_thread(batch.commit)
-                batch = db.db.batch()
-                write_count = 0
-                
-        if write_count > 0:
-            await asyncio.to_thread(batch.commit)
-
-        del df
-        gc.collect()
-        
-        return format_api_response(True, message=f"Seeded REDD data for {request.user_id}.")
+        return format_api_response(True, message=f"Seeded UK-DALE data for {request.user_id}.")
     except HTTPException:
         raise
     except Exception as e:

@@ -1,79 +1,276 @@
 {
   "Fan": {
-    "states": [0.0, 40.0, 75.0],
-    "max_state_index": 2,
-    "std_dev": 2.5,
+    "states": [
+      0.0,
+      105.42
+    ],
+    "max_state_index": 1,
+    "std_dev": 6.17,
     "type": "resistive",
     "description": "REDD-distilled: Low/High fan states",
     "prob_day": 0.35,
-    "prob_night": 0.40,
+    "prob_night": 0.4,
     "max_duration_hr": 24.0,
-    "default_wattage": 75.0
+    "default_wattage": 105.42,
+    "transition_matrix": [
+      [
+        0.9998,
+        0.0002
+      ],
+      [
+        0.0014,
+        0.9986
+      ]
+    ],
+    "start_probabilities": [
+      0.9023,
+      0.0977
+    ],
+    "means": [
+      0.0,
+      105.42
+    ],
+    "covariances": [
+      38.0611,
+      38.0611
+    ]
   },
   "Laptop": {
-    "states": [0.0, 25.0, 65.0, 120.0],
-    "max_state_index": 3,
-    "std_dev": 5.0,
+    "states": [
+      0.0,
+      24.95,
+      1170.0
+    ],
+    "max_state_index": 2,
+    "std_dev": 0.69,
     "type": "smps",
     "description": "REDD-distilled: Idle/Standard/Heavy-Load laptop states",
-    "prob_day": 0.60,
-    "prob_night": 0.40,
+    "prob_day": 0.6,
+    "prob_night": 0.4,
     "max_duration_hr": 12.0,
-    "default_wattage": 65.0
+    "default_wattage": 1170.0,
+    "transition_matrix": [
+      [
+        0.9999,
+        0.0001,
+        0.0
+      ],
+      [
+        0.0077,
+        0.9923,
+        0.0
+      ],
+      [
+        1.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "start_probabilities": [
+      0.9926,
+      0.0074,
+      0.0
+    ],
+    "means": [
+      0.0,
+      24.95,
+      1170.0
+    ],
+    "covariances": [
+      0.4791,
+      0.4791,
+      0.4791
+    ]
   },
   "Charger": {
-    "states": [0.0, 5.0, 15.0, 30.0],
-    "max_state_index": 3,
-    "std_dev": 1.0,
+    "states": [
+      0.0,
+      8.16
+    ],
+    "max_state_index": 1,
+    "std_dev": 0.13,
     "type": "smps",
     "description": "Mobile/Tablet Charger: Low-power consumption",
-    "prob_day": 0.80,
-    "prob_night": 0.90,
+    "prob_day": 0.8,
+    "prob_night": 0.9,
     "max_duration_hr": 8.0,
-    "default_wattage": 20.0
+    "default_wattage": 8.16,
+    "transition_matrix": [
+      [
+        0.9999,
+        0.0001
+      ],
+      [
+        0.0008,
+        0.9992
+      ]
+    ],
+    "start_probabilities": [
+      0.938,
+      0.062
+    ],
+    "means": [
+      0.0,
+      8.16
+    ],
+    "covariances": [
+      0.0175,
+      0.0175
+    ]
   },
   "Lamp": {
-    "states": [0.0, 15.0, 30.0],
-    "max_state_index": 2,
-    "std_dev": 0.5,
+    "states": [
+      0.0,
+      46.13
+    ],
+    "max_state_index": 1,
+    "std_dev": 1.07,
     "type": "resistive",
     "description": "REDD-distilled: LED/Fluorescent states",
-    "prob_day": 0.10,
-    "prob_night": 0.70,
+    "prob_day": 0.1,
+    "prob_night": 0.7,
     "max_duration_hr": 10.0,
-    "default_wattage": 25.0
+    "default_wattage": 46.13,
+    "transition_matrix": [
+      [
+        0.9999,
+        0.0001
+      ],
+      [
+        0.0054,
+        0.9946
+      ]
+    ],
+    "start_probabilities": [
+      0.984,
+      0.016
+    ],
+    "means": [
+      0.0,
+      46.13
+    ],
+    "covariances": [
+      1.1494,
+      1.1494
+    ]
   },
   "Iron": {
-    "states": [0.0, 800.0, 1200.0, 1500.0],
-    "max_state_index": 3,
-    "std_dev": 20.0,
+    "states": [
+      0.0,
+      405.0,
+      1002.8
+    ],
+    "max_state_index": 2,
+    "std_dev": 0.47,
     "type": "thermal_cycling",
     "description": "REDD-distilled: Cycling thermostat states",
     "prob_day": 0.05,
     "prob_night": 0.02,
     "max_duration_hr": 1.0,
-    "default_wattage": 1200.0
+    "default_wattage": 1002.8,
+    "transition_matrix": [
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        1.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "start_probabilities": [
+      1.0,
+      0.0,
+      0.0
+    ],
+    "means": [
+      0.0,
+      405.0,
+      1002.8
+    ],
+    "covariances": [
+      0.2226,
+      0.2226,
+      0.2226
+    ]
   },
   "Kettle": {
-    "states": [0.0, 1800.0, 2200.0],
-    "max_state_index": 2,
-    "std_dev": 15.0,
+    "states": [
+      0.0,
+      1577.67
+    ],
+    "max_state_index": 1,
+    "std_dev": 8.81,
     "type": "heating",
     "description": "REDD-distilled: High-power thermal signature",
-    "prob_day": 0.10,
+    "prob_day": 0.1,
     "prob_night": 0.05,
     "max_duration_hr": 0.5,
-    "default_wattage": 2000.0
+    "default_wattage": 1577.67,
+    "transition_matrix": [
+      [
+        0.9998,
+        0.0002
+      ],
+      [
+        0.0383,
+        0.9617
+      ]
+    ],
+    "start_probabilities": [
+      0.9938,
+      0.0062
+    ],
+    "means": [
+      0.0,
+      1577.67
+    ],
+    "covariances": [
+      77.6448,
+      77.6448
+    ]
   },
   "Printer": {
-    "states": [0.0, 10.0, 50.0, 450.0],
-    "max_state_index": 3,
-    "std_dev": 10.0,
+    "states": [
+      0.0,
+      1181.59
+    ],
+    "max_state_index": 1,
+    "std_dev": 2.48,
     "type": "intermittent_high_load",
     "description": "Desk Printer: Standby/Warming/Printing",
     "prob_day": 0.15,
     "prob_night": 0.05,
     "max_duration_hr": 2.0,
-    "default_wattage": 100.0
+    "default_wattage": 1181.59,
+    "transition_matrix": [
+      [
+        1.0,
+        0.0
+      ],
+      [
+        0.2439,
+        0.7561
+      ]
+    ],
+    "start_probabilities": [
+      0.9998,
+      0.0002
+    ],
+    "means": [
+      0.0,
+      1181.59
+    ],
+    "covariances": [
+      6.1324,
+      6.1324
+    ]
   }
 }

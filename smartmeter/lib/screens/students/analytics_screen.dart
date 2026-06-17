@@ -17,6 +17,7 @@ class AnalyticsScreen extends StatefulWidget {
 class _AnalyticsScreenState extends State<AnalyticsScreen> {
   int _touchedIndex = -1; 
   DateTime _selectedDate = DateTime.now();
+  int _selectedDay = 1;
 
   ForecastResponse? _forecast;
   bool _isLoadingForecast = true;
@@ -24,11 +25,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   String? _forecastError;
   final ApiService _apiService = ApiService();
 
-  final Color _bgDark = const Color(0xFF121212);      
-  final Color _cardDark = const Color(0xFF1E1E1E);    
-  final Color _textPrimary = Colors.white;            
-  final Color _textSecondary = Colors.white54;        
-  final Color _cCyan = const Color(0xFF00E5FF);  
+  Color get _bgDark => Theme.of(context).brightness == Brightness.dark ? const Color(0xFF121212) : const Color(0xFFF5F6F9);
+  Color get _cardDark => Theme.of(context).brightness == Brightness.dark ? const Color(0xFF1E1E1E) : Colors.white;
+  Color get _textPrimary => Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87;
+  Color get _textSecondary => Theme.of(context).brightness == Brightness.dark ? Colors.white54 : Colors.black54;
+  Color get _cCyan => Theme.of(context).brightness == Brightness.dark ? const Color(0xFF00E5FF) : const Color(0xFF0288D1);
 
   @override
   void initState() {
@@ -36,7 +37,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     _fetchForecastData(_selectedDate.month, _selectedDate.year);
   }
 
- Future<void> _fetchForecastData(int month, int year) async {
+  Future<void> _fetchForecastData(int month, int year, {int attempt = 1}) async {
     final user = FirebaseAuth.instance.currentUser;
     
     if (user == null) {
@@ -54,12 +55,20 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _forecast = null;
-          _isLoadingForecast = false;
-          _forecastError = e.toString();
-        });
+      debugPrint("Forecast Fetch Failed (attempt $attempt): $e");
+      if (attempt < 3) {
+        await Future.delayed(const Duration(seconds: 2));
+        if (mounted) {
+          _fetchForecastData(month, year, attempt: attempt + 1);
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _forecast = null;
+            _isLoadingForecast = false;
+            _forecastError = e.toString();
+          });
+        }
       }
     }
   }
@@ -81,6 +90,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       _selectedDate = DateTime(_selectedDate.year, _selectedDate.month + offset);
       _isLoadingForecast = true;
       _forecast = null;
+      _selectedDay = 1;
     });
     _fetchHistoricalData(); 
     _fetchForecastData(_selectedDate.month, _selectedDate.year);
@@ -145,6 +155,20 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           .toList();
     }
 
+    // Extract hourly trend for the selected day
+    DailyUsagePoint? selectedPoint;
+    if (staticReport != null && staticReport.usageTrend.isNotEmpty) {
+      selectedPoint = staticReport.usageTrend.firstWhere(
+        (p) => p.day == _selectedDay,
+        orElse: () => staticReport.usageTrend.first,
+      );
+    }
+    final Map<int, double> hourlyTrendToShow = (selectedPoint != null && selectedPoint.hourlyUsage.isNotEmpty)
+        ? selectedPoint.hourlyUsage
+        : (staticReport?.hourlyUsage ?? {}).isNotEmpty
+            ? staticReport!.hourlyUsage
+            : (_forecast?.mcmcHourlyProfile ?? {});
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
@@ -152,11 +176,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         children: [
           _buildMonthSelector(),
           const SizedBox(height: 24),
-
+ 
           if (_isLoadingForecast)
             const Center(child: CircularProgressIndicator())
           else if (_forecast != null)
-            _buildForecastCard(_forecast!, targetEnergyGoal)
+            _buildDailyAndForecastCard(_forecast!, staticReport, targetEnergyGoal)
           else
             Card(
               color: _cardDark,
@@ -167,13 +191,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             ),
           
           const SizedBox(height: 24),
-
+ 
           if (staticReport != null) ...[
             if (staticReport.anomalies.isNotEmpty) ...[
               _buildAnomaliesCard(staticReport.anomalies),
               const SizedBox(height: 24),
             ],
-
+ 
             _buildSectionTitle("AI Prediction Verification"),
             const SizedBox(height: 12),
             
@@ -182,7 +206,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             ), 
             
             const SizedBox(height: 24),
-
+ 
             _buildBreakdownCard(
               staticReport.summary.totalConsumption, 
               chartEntries, 
@@ -202,14 +226,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               ),
             ),
           ],
-
+ 
           _buildSectionTitle("24h Load Profile"),
           const SizedBox(height: 12),
-          _buildHourlyTrendCard(
-            (staticReport?.hourlyUsage ?? {}).isNotEmpty 
-                ? staticReport!.hourlyUsage 
-                : (_forecast?.mcmcHourlyProfile ?? {})
-          ),
+          _buildHourlyTrendCard(hourlyTrendToShow),
         ],
       ),
     );
@@ -224,7 +244,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
   Widget _buildAnomaliesCard(List<String> anomalies) {
     return Card(
-      color: const Color(0xFF311B1B), 
+      color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF311B1B) : const Color(0xFFFFEBEE), 
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: const BorderSide(color: Colors.redAccent, width: 1),
@@ -271,7 +291,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       decoration: BoxDecoration(
         color: _cardDark,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white12),
+        border: Border.all(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12),
         boxShadow: [
           BoxShadow(color: Colors.black.withAlpha(51), blurRadius: 10, offset: const Offset(0, 4)),
         ],
@@ -331,7 +351,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
     return Card(
       elevation: 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Colors.white12)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12)),
       color: _cardDark, 
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -419,7 +439,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               ],
             ),
             const SizedBox(height: 16),
-            const Divider(color: Colors.white12),
+            Divider(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12),
             Padding(
               padding: const EdgeInsets.only(top: 8.0),
               child: Text(
@@ -438,7 +458,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     
     return Card(
       color: _cardDark,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Colors.white12)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12)),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -572,16 +592,16 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     spots.sort((a, b) => a.x.compareTo(b.x));
 
     return Card(
-      color: const Color(0xFF1E1E1E),
+      color: _cardDark,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              "24h Synthetic Load Profile",
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+            Text(
+              "24h Load Profile (Day $_selectedDay)",
+              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 24),
             SizedBox(
@@ -591,7 +611,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                   gridData: FlGridData(
                     show: true,
                     drawVerticalLine: false,
-                    getDrawingHorizontalLine: (value) => FlLine(color: Colors.white.withAlpha(13), strokeWidth: 1),
+                    getDrawingHorizontalLine: (value) => FlLine(color: Theme.of(context).brightness == Brightness.dark ? Colors.white.withAlpha(13) : Colors.black.withAlpha(13), strokeWidth: 1),
                   ),
                   titlesData: FlTitlesData(
                     rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
@@ -602,7 +622,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                         reservedSize: 22,
                         interval: 6,
                         getTitlesWidget: (value, meta) {
-                          return Text('${value.toInt()}:00', style: const TextStyle(color: Colors.white54, fontSize: 10));
+                          return Text('${value.toInt()}:00', style: TextStyle(color: _textSecondary, fontSize: 10));
                         },
                       ),
                     ),
@@ -612,7 +632,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                         interval: maxY > 0 ? (maxY / 4).ceilToDouble() : 1,
                         reservedSize: 28,
                         getTitlesWidget: (value, meta) {
-                          return Text(value.toStringAsFixed(1), style: const TextStyle(color: Colors.white54, fontSize: 10));
+                          return Text(value.toStringAsFixed(1), style: TextStyle(color: _textSecondary, fontSize: 10));
                         },
                       ),
                     ),
@@ -645,46 +665,221 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     );
   }
 
-  Widget _buildForecastCard(ForecastResponse forecast, double energyGoal) {
+  Widget _buildDailyAndForecastCard(ForecastResponse forecast, EnergyReportData? report, double energyGoal) {
     final bool isOverBudget = forecast.estimatedEndOfMonthTotal > energyGoal;
     final Color statusColor = isOverBudget ? Colors.redAccent : Colors.greenAccent;
     final double estimatedCost = ReportSummary.calculateMalaysianTariffA(forecast.estimatedEndOfMonthTotal);
 
+    DailyUsagePoint? selectedPoint;
+    if (report != null && report.usageTrend.isNotEmpty) {
+      // Find the selected day or fallback to the first available day
+      selectedPoint = report.usageTrend.firstWhere(
+        (p) => p.day == _selectedDay,
+        orElse: () => report.usageTrend.first,
+      );
+      // Ensure local state day exists in the actual usageTrend keys
+      if (_selectedDay == 1 && selectedPoint.day != 1) {
+        _selectedDay = selectedPoint.day;
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Card(
+          color: _cardDark,
+          elevation: 4,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12)),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('30-Day Automated Forecast', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: _textPrimary)),
+                const SizedBox(height: 12),
+                Text('Current Usage: ${forecast.currentConsumption.toStringAsFixed(1)} kWh', style: TextStyle(color: _textSecondary)),
+                Text('Projected Addition: +${forecast.projectedAddition.toStringAsFixed(1)} kWh', style: TextStyle(color: _textSecondary)),
+                Text('Estimated Monthly Cost: RM ${estimatedCost.toStringAsFixed(2)}', style: TextStyle(color: _textSecondary)),
+                Divider(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12, height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Estimated Month Total:', style: TextStyle(fontWeight: FontWeight.w600, color: _textPrimary)),
+                    Text(
+                      '${forecast.estimatedEndOfMonthTotal.toStringAsFixed(1)} kWh',
+                      style: TextStyle(
+                        color: statusColor,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (isOverBudget)
+                  const Text(
+                    'Warning: Projected to exceed energy budget.',
+                    style: TextStyle(color: Colors.redAccent, fontSize: 12),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        if (report != null && report.usageTrend.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          _buildSectionTitle("Daily Estimation & Manual Overrides"),
+          const SizedBox(height: 12),
+          _buildDaySelector(report.usageTrend),
+          const SizedBox(height: 12),
+          if (selectedPoint != null)
+            _buildDailyDetailCard(selectedPoint),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildDaySelector(List<DailyUsagePoint> trend) {
+    return SizedBox(
+      height: 64,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: trend.length,
+        itemBuilder: (context, index) {
+          final point = trend[index];
+          final isSelected = point.day == _selectedDay;
+          return GestureDetector(
+            onTap: () {
+              setState(() {
+                _selectedDay = point.day;
+              });
+            },
+            child: Container(
+              width: 56,
+              margin: const EdgeInsets.symmetric(horizontal: 4),
+              decoration: BoxDecoration(
+                color: isSelected ? _cCyan : _cardDark,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: isSelected ? _cCyan : (Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12)),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    "Day",
+                    style: TextStyle(
+                      color: isSelected ? Colors.black54 : _textSecondary,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    "${point.day}",
+                    style: TextStyle(
+                      color: isSelected ? Colors.black : _textPrimary,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildDailyDetailCard(DailyUsagePoint point) {
+    final applianceProvider = context.read<ApplianceProvider>();
+    final Map<String, String> nameToTypeMap = {};
+    for (var app in applianceProvider.appliances) {
+      nameToTypeMap[app.name.toLowerCase().trim()] = app.type;
+    }
+
+    final double overrideTotal = point.manualOverrides.values.fold(0.0, (a, b) => a + b);
+    final double aiTotal = (point.value - overrideTotal) > 0.0 ? (point.value - overrideTotal) : 0.0;
+
     return Card(
       color: _cardDark,
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Colors.white12)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12)),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('30-Day Automated Forecast', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: _textPrimary)),
-            const SizedBox(height: 12),
-            Text('Current Usage: ${forecast.currentConsumption} kWh', style: TextStyle(color: _textSecondary)),
-            Text('Projected Addition: +${forecast.projectedAddition} kWh', style: TextStyle(color: _textSecondary)),
-            Text('Estimated Monthly Cost: RM ${estimatedCost.toStringAsFixed(2)}', style: TextStyle(color: _textSecondary)),
-            const Divider(color: Colors.white12, height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Estimated Month Total:', style: TextStyle(fontWeight: FontWeight.w600, color: _textPrimary)),
-                Text(
-                  '${forecast.estimatedEndOfMonthTotal} kWh',
-                  style: TextStyle(
-                    color: statusColor,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                  ),
-                ),
+                Text("Day ${point.day} Load Breakdown", style: TextStyle(color: _textPrimary, fontWeight: FontWeight.bold, fontSize: 15)),
+                Text("${point.value.toStringAsFixed(2)} kWh", style: TextStyle(color: _cCyan, fontWeight: FontWeight.bold, fontSize: 16)),
               ],
             ),
-            const SizedBox(height: 8),
-            if (isOverBudget)
-              const Text(
-                'Warning: Projected to exceed energy budget.',
-                style: TextStyle(color: Colors.redAccent, fontSize: 12),
-              ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _buildSummaryBadge("AI Estimated", aiTotal, _cCyan),
+                const SizedBox(width: 12),
+                _buildSummaryBadge("Manual Override", overrideTotal, Colors.purpleAccent),
+              ],
+            ),
+            Divider(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12, height: 24),
+            if (point.applianceBreakdown.isEmpty)
+              Text("No breakdown logged for this day.", style: TextStyle(color: _textSecondary, fontSize: 12))
+            else
+              ...point.applianceBreakdown.entries.map((e) {
+                final String keyLower = e.key.toLowerCase().trim();
+                final String type = nameToTypeMap[keyLower] ?? e.key;
+                final String normalizedType = type.isNotEmpty 
+                    ? (type[0].toUpperCase() + type.substring(1)) 
+                    : 'Unknown';
+                    
+                final double appTotal = e.value;
+                final double appOverride = point.manualOverrides[e.key] ?? 0.0;
+                final double appAI = (appTotal - appOverride) > 0.0 ? (appTotal - appOverride) : 0.0;
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(normalizedType, style: TextStyle(color: _textPrimary, fontSize: 13)),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text("${appTotal.toStringAsFixed(3)} kWh", style: TextStyle(color: _textPrimary, fontSize: 13, fontWeight: FontWeight.bold)),
+                          if (appOverride > 0)
+                            Text(
+                              "${appAI.toStringAsFixed(3)} (AI) + ${appOverride.toStringAsFixed(3)} (Override)",
+                              style: TextStyle(color: _textSecondary, fontSize: 10),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryBadge(String label, double val, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+        decoration: BoxDecoration(
+          color: color.withAlpha(20),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withAlpha(40)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white70 : Colors.black54, fontSize: 10)),
+            const SizedBox(height: 4),
+            Text("${val.toStringAsFixed(2)} kWh", style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13)),
           ],
         ),
       ),

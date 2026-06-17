@@ -15,6 +15,7 @@ class StudentShell extends StatefulWidget {
 class _StudentShellState extends State<StudentShell> {
   int _idx = 0;
   bool _isInitialized = false;
+  String? _subscribedUid;
 
   final List<Widget> _screens = [
     const StudentDashboard(),    
@@ -26,11 +27,6 @@ class _StudentShellState extends State<StudentShell> {
   @override
   void initState() {
     super.initState();
-    final user = context.read<AppAuthProvider>().currentUser;
-    if (user != null) {
-      context.read<ApplianceProvider>().subscribeToUser(user.uid);
-      context.read<GoalProvider>().subscribeToStudent(user.uid);
-    }
   }
 
   @override
@@ -38,20 +34,34 @@ class _StudentShellState extends State<StudentShell> {
     super.didChangeDependencies();
     final user = context.watch<AppAuthProvider>().currentUser;
     
-    if (user != null && !_isInitialized) {
-      _isInitialized = true;
-      final now = DateTime.now();
-      
-      // STRUCTURAL FIX: IoT Telemetry Removed. Proceed strictly to the identity-bound batch fetch.
-      context.read<EnergyProvider>().loadReport(
-        scope: 'Personal',
-        month: now.month,
-        year: now.year,
-        unitId: user.uid,
-      );
+    if (user != null) {
+      if (_subscribedUid != user.uid) {
+        _subscribedUid = user.uid;
+        _isInitialized = false;
+      }
+
+      if (!_isInitialized) {
+        _isInitialized = true;
+        final now = DateTime.now();
+        
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            context.read<EnergyProvider>().loadReport(
+              scope: 'Personal',
+              month: now.month,
+              year: now.year,
+              unitId: user.uid,
+            );
+          }
+        });
+      }
+    } else {
+      _subscribedUid = null;
+      _isInitialized = false;
     }
   }
   
+  @override
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -59,7 +69,7 @@ class _StudentShellState extends State<StudentShell> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: _idx,
         onDestinationSelected: (index) => setState(() => _idx = index),
-        backgroundColor: AppTheme.surface,
+        backgroundColor: Theme.of(context).colorScheme.surface,
         indicatorColor: AppTheme.ecoTeal.withValues(alpha: 0.2),
         destinations: const [
           NavigationDestination(
@@ -96,11 +106,12 @@ class StudentDashboard extends StatefulWidget {
 }
 
 class _StudentDashboardState extends State<StudentDashboard> {
-  final Color _bgDark = const Color(0xFF121212);
-  final Color _cardDark = const Color(0xFF1E1E1E);
-  final Color _textPrimary = Colors.white;
-
   void _showEditGoalDialog(BuildContext context, GoalProvider goalProvider) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final Color cardBg = isDark ? const Color(0xFF1E1E1E) : Colors.white;
+    final Color textPrimary = isDark ? Colors.white : Colors.black87;
+    final Color accentCyan = isDark ? const Color(0xFF00E5FF) : const Color(0xFF0288D1);
+
     final TextEditingController controller = TextEditingController(
       text: goalProvider.target > 0 ? goalProvider.target.toStringAsFixed(0) : "10"
     );
@@ -108,25 +119,25 @@ class _StudentDashboardState extends State<StudentDashboard> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: _cardDark,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Colors.white12)),
-        title: Text("Edit Monthly Budget", style: TextStyle(color: _textPrimary, fontWeight: FontWeight.bold)),
+        backgroundColor: cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: isDark ? Colors.white12 : Colors.black12)),
+        title: Text("Edit Monthly Budget", style: TextStyle(color: textPrimary, fontWeight: FontWeight.bold)),
         content: TextField(
           controller: controller,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          style: TextStyle(color: _textPrimary),
-          cursorColor: const Color(0xFF00E5FF),
-          decoration: const InputDecoration(
+          style: TextStyle(color: textPrimary),
+          cursorColor: accentCyan,
+          decoration: InputDecoration(
             labelText: "Target Goal (kWh)",
-            labelStyle: TextStyle(color: Colors.white54),
-            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: Color(0xFF00E5FF))),
+            labelStyle: TextStyle(color: isDark ? Colors.white54 : Colors.black54),
+            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: isDark ? Colors.white24 : Colors.black26)),
+            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: accentCyan)),
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text("Cancel", style: TextStyle(color: Colors.white54)),
+            child: Text("Cancel", style: TextStyle(color: isDark ? Colors.white54 : Colors.black54)),
           ),
           ElevatedButton(
             onPressed: () {
@@ -136,8 +147,8 @@ class _StudentDashboardState extends State<StudentDashboard> {
               }
               Navigator.pop(ctx);
             },
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E5FF)),
-            child: const Text("Save", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+            style: ElevatedButton.styleFrom(backgroundColor: accentCyan),
+            child: Text("Save", style: TextStyle(color: isDark ? Colors.black : Colors.white, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -145,6 +156,11 @@ class _StudentDashboardState extends State<StudentDashboard> {
   }
 
   void _showTariffModal(BuildContext context, double currentKwh) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final Color cardBg = isDark ? const Color(0xFF1E1E1E) : Colors.white;
+    final Color textPrimary = isDark ? Colors.white : Colors.black87;
+    final Color accentCyan = isDark ? const Color(0xFF00E5FF) : const Color(0xFF0288D1);
+
     double block1 = currentKwh > 200 ? 200 : currentKwh;
     double block2 = currentKwh > 200 ? (currentKwh > 300 ? 100 : currentKwh - 200) : 0;
     double block3 = currentKwh > 300 ? (currentKwh > 600 ? 300 : currentKwh - 300) : 0;
@@ -156,7 +172,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
 
     showModalBottomSheet(
       context: context,
-      backgroundColor: _cardDark,
+      backgroundColor: cardBg,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (context) => Padding(
         padding: const EdgeInsets.all(24.0),
@@ -164,17 +180,17 @@ class _StudentDashboardState extends State<StudentDashboard> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text("Tariff Breakdown", style: TextStyle(color: _textPrimary, fontSize: 18, fontWeight: FontWeight.bold)),
+            Text("Tariff Breakdown", style: TextStyle(color: textPrimary, fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
-            _buildTariffRow("First 200 kWh (RM 0.218)", block1, cost1),
-            _buildTariffRow("Next 100 kWh (RM 0.334)", block2, cost2),
-            _buildTariffRow("Next 300 kWh (RM 0.516)", block3, cost3),
-            const Divider(color: Colors.white24, height: 32),
+            _buildTariffRow("First 200 kWh (RM 0.218)", block1, cost1, textPrimary),
+            _buildTariffRow("Next 100 kWh (RM 0.334)", block2, cost2, textPrimary),
+            _buildTariffRow("Next 300 kWh (RM 0.516)", block3, cost3, textPrimary),
+            Divider(color: isDark ? Colors.white24 : Colors.black12, height: 32),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text("Total Estimate", style: TextStyle(color: _textPrimary, fontWeight: FontWeight.bold)),
-                Text("RM ${totalCost.toStringAsFixed(2)}", style: const TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold, fontSize: 16)),
+                Text("Total Estimate", style: TextStyle(color: textPrimary, fontWeight: FontWeight.bold)),
+                Text("RM ${totalCost.toStringAsFixed(2)}", style: TextStyle(color: accentCyan, fontWeight: FontWeight.bold, fontSize: 16)),
               ],
             )
           ],
@@ -183,15 +199,15 @@ class _StudentDashboardState extends State<StudentDashboard> {
     );
   }
 
-  Widget _buildTariffRow(String label, double kwh, double cost) {
+  Widget _buildTariffRow(String label, double kwh, double cost, Color textPrimary) {
     if (kwh <= 0) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: const TextStyle(color: Colors.white70, fontSize: 13)),
-          Text("RM ${cost.toStringAsFixed(2)}", style: TextStyle(color: _textPrimary, fontSize: 13)),
+          Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13)),
+          Text("RM ${cost.toStringAsFixed(2)}", style: TextStyle(color: textPrimary, fontSize: 13)),
         ],
       ),
     );
@@ -203,7 +219,14 @@ class _StudentDashboardState extends State<StudentDashboard> {
     final energyProvider = context.watch<EnergyProvider>();
     
     final report = energyProvider.currentReport;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     
+    final Color scaffoldBg = isDark ? const Color(0xFF121212) : const Color(0xFFF5F6F9);
+    final Color cardBg = isDark ? const Color(0xFF1E1E1E) : Colors.white;
+    final Color textPrimary = isDark ? Colors.white : Colors.black87;
+    final Color textLabel = isDark ? Colors.white70 : Colors.black54;
+    final Color accentCyan = isDark ? const Color(0xFF00E5FF) : const Color(0xFF0288D1);
+
     // Dynamically fold the actual usage from the AI report
     final double currentTotalKwh = report != null 
         ? report.applianceBreakdown.values.fold(0.0, (sum, value) => sum + value) 
@@ -223,7 +246,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
         : "0.0 kg";
 
     return Scaffold(
-      backgroundColor: _bgDark,
+      backgroundColor: scaffoldBg,
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16.0),
@@ -248,21 +271,25 @@ class _StudentDashboardState extends State<StudentDashboard> {
                 ),
               ),
               const SizedBox(height: 24),
-              const Text("Monthly Insights", style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
+              Text("Monthly Insights", style: TextStyle(color: textLabel, fontWeight: FontWeight.bold)),
               const SizedBox(height: 12),
               Row(
                 children: [
                   Expanded(
                     child: Container(
                       padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(color: _cardDark, borderRadius: BorderRadius.circular(12)),
+                      decoration: BoxDecoration(
+                        color: cardBg, 
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.black.withValues(alpha: 0.08)),
+                      ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Icon(Icons.analytics, color: energyProvider.isLoading ? Colors.white54 : const Color(0xFF00E5FF), size: 24),
+                          Icon(Icons.analytics, color: energyProvider.isLoading ? Colors.grey : accentCyan, size: 24),
                           const SizedBox(height: 12),
-                          Text(report != null ? "Synced" : (energyProvider.isLoading ? "Loading" : "Pending"), style: TextStyle(color: _textPrimary, fontSize: 20, fontWeight: FontWeight.bold)),
-                          const Text("AI Batch Status", style: TextStyle(color: Colors.white54, fontSize: 12)),
+                          Text(report != null ? "Synced" : (energyProvider.isLoading ? "Loading" : "Pending"), style: TextStyle(color: textPrimary, fontSize: 20, fontWeight: FontWeight.bold)),
+                          Text("AI Batch Status", style: TextStyle(color: isDark ? Colors.white54 : Colors.black54, fontSize: 12)),
                         ],
                       ),
                     ),
@@ -271,14 +298,18 @@ class _StudentDashboardState extends State<StudentDashboard> {
                   Expanded(
                     child: Container(
                       padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(color: _cardDark, borderRadius: BorderRadius.circular(12)),
+                      decoration: BoxDecoration(
+                        color: cardBg, 
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.black.withValues(alpha: 0.08)),
+                      ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text("CO₂", style: TextStyle(color: AppTheme.ecoTeal, fontWeight: FontWeight.bold, fontSize: 20)),
                           const SizedBox(height: 12),
-                          Text(displayCarbon, style: TextStyle(color: _textPrimary, fontSize: 20, fontWeight: FontWeight.bold)),
-                          const Text("Monthly Footprint", style: TextStyle(color: Colors.white54, fontSize: 12)),
+                          Text(displayCarbon, style: TextStyle(color: textPrimary, fontSize: 20, fontWeight: FontWeight.bold)),
+                          Text("Monthly Footprint", style: TextStyle(color: isDark ? Colors.white54 : Colors.black54, fontSize: 12)),
                         ],
                       ),
                     ),
@@ -286,24 +317,28 @@ class _StudentDashboardState extends State<StudentDashboard> {
                 ],
               ),
               const SizedBox(height: 24),
-              const Text("My Goal", style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
+              Text("My Goal", style: TextStyle(color: textLabel, fontWeight: FontWeight.bold)),
               const SizedBox(height: 12),
               Container(
                 padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
+                decoration: BoxDecoration(
+                  color: cardBg, 
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.black.withValues(alpha: 0.08)),
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     InkWell(
                       onTap: () => _showEditGoalDialog(context, goalProvider),
                       borderRadius: BorderRadius.circular(8),
-                      child: const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 4.0),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4.0),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text("Monthly Budget", style: TextStyle(color: Colors.black, fontSize: 16, fontWeight: FontWeight.bold)),
-                            Icon(Icons.edit, color: Colors.grey, size: 16),
+                            Text("Monthly Budget", style: TextStyle(color: textPrimary, fontSize: 16, fontWeight: FontWeight.bold)),
+                            const Icon(Icons.edit, color: Colors.grey, size: 16),
                           ],
                         ),
                       ),
@@ -315,7 +350,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
                       borderRadius: BorderRadius.circular(8),
                       child: LinearProgressIndicator(
                         value: safePercentage,
-                        backgroundColor: Colors.grey.shade200,
+                        backgroundColor: isDark ? Colors.white10 : Colors.grey.shade200,
                         color: AppTheme.ecoTeal,
                         minHeight: 12,
                       ),

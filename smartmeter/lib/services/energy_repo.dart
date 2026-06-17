@@ -70,25 +70,53 @@ class FirestoreRepository implements EnergyRepository {
     defaultValue: 'https://ml-backend-338592292074.asia-southeast1.run.app',
   );
 
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<DocumentSnapshot>? _dbSub;
+  StreamController<Users?>? _authStateController;
+
   @override
   Stream<Users?> get authStateChanges {
-    return _auth.authStateChanges().asyncExpand((firebaseUser) {
-      if (firebaseUser == null) return Stream.value(null);
+    if (_authStateController == null) {
+      _authStateController = StreamController<Users?>.broadcast(
+        onListen: () {
+          _authSub = _auth.authStateChanges().listen((firebaseUser) {
+            _dbSub?.cancel();
+            _dbSub = null;
 
-      return _db.collection('users').doc(firebaseUser.uid).snapshots().map<Users?>((doc) {
-        if (doc.exists) return Users.fromFirestore(doc);
-
-        return Users(
-          uid: firebaseUser.uid,
-          email: firebaseUser.email ?? '',
-          name: firebaseUser.displayName ?? 'User',
-          role: 'student',
-        );
-      }).handleError((error) {
-        AppLog.error("Auth State Firestore Stream Error", error);
-        return null;
-      });
-    });
+            if (firebaseUser == null) {
+              _authStateController?.add(null);
+            } else {
+              _dbSub = _db.collection('users').doc(firebaseUser.uid).snapshots().listen(
+                (doc) {
+                  if (doc.exists) {
+                    _authStateController?.add(Users.fromFirestore(doc));
+                  } else {
+                    _authStateController?.add(Users(
+                      uid: firebaseUser.uid,
+                      email: firebaseUser.email ?? '',
+                      name: firebaseUser.displayName ?? 'User',
+                      role: 'student',
+                    ));
+                  }
+                },
+                onError: (error) {
+                  AppLog.error("Auth State Firestore Stream Error", error);
+                  _authStateController?.add(null);
+                },
+              );
+            }
+          });
+        },
+        onCancel: () {
+          _dbSub?.cancel();
+          _dbSub = null;
+          _authSub?.cancel();
+          _authSub = null;
+          _authStateController = null;
+        },
+      );
+    }
+    return _authStateController!.stream;
   }
 
   @override
@@ -449,31 +477,50 @@ class FirestoreRepository implements EnergyRepository {
       final bool useSnapshotFallback = rawBreakdown.isEmpty;
 
       for (final QueryDocumentSnapshot doc in dailySnapshot.docs) {
-        final Map<String, dynamic> dailyData = Map<String, dynamic>.from(doc.data() as Map? ?? {});
-        
         final List<String> docIdParts = doc.id.split('-');
-        final int day = docIdParts.length == 3 ? (int.tryParse(docIdParts[2]) ?? 1) : 1;
+        if (docIdParts.length != 3) {
+          // Ignore legacy monthly summary documents stored in this collection
+          continue;
+        }
+        final int day = int.tryParse(docIdParts[2]) ?? 1;
+        final Map<String, dynamic> dailyData = Map<String, dynamic>.from(doc.data() as Map? ?? {});
 
         final Map<String, dynamic> dailyBreakdown = Map<String, dynamic>.from(dailyData['appliance_breakdown'] as Map? ?? {});
         double dailyTotal = 0.0;
+        final Map<String, double> dailyAppBreakdown = {};
         dailyBreakdown.forEach((key, val) {
           final double valDouble = (val as num?)?.toDouble() ?? 0.0;
+          dailyAppBreakdown[key] = valDouble;
           if (useSnapshotFallback) {
             applianceBreakdown[key] = (applianceBreakdown[key] ?? 0.0) + valDouble;
           }
           dailyTotal += valDouble;
         });
 
+        final Map<String, double> dailyManualOverrides = {};
+        final Map<String, dynamic> rawManual = Map<String, dynamic>.from(dailyData['manual_overrides'] as Map? ?? {});
+        rawManual.forEach((key, val) {
+          dailyManualOverrides[key] = (val as num?)?.toDouble() ?? 0.0;
+        });
+
+        final Map<int, double> dailyHourlyUsage = {};
         final Map<String, dynamic> dailyHourly = Map<String, dynamic>.from(dailyData['hourly_usage'] as Map? ?? {});
         dailyHourly.forEach((key, val) {
           final int hour = int.tryParse(key) ?? 0;
           final double valDouble = (val as num?)?.toDouble() ?? 0.0;
+          dailyHourlyUsage[hour] = valDouble;
           if (useSnapshotFallback) {
             hourlyUsage[hour] = (hourlyUsage[hour] ?? 0.0) + valDouble;
           }
         });
 
-        usageTrend.add(DailyUsagePoint(day, dailyTotal));
+        usageTrend.add(DailyUsagePoint(
+          day, 
+          dailyTotal,
+          applianceBreakdown: dailyAppBreakdown,
+          manualOverrides: dailyManualOverrides,
+          hourlyUsage: dailyHourlyUsage,
+        ));
       }
       
       usageTrend.sort((a, b) => a.day.compareTo(b.day));

@@ -175,15 +175,32 @@ class FirebaseClient:
                 "hourly_usage": cleaned_payload.get('hourlyUsage', {}),
             })
             
-            # 3. Insert Daily Granular Array
-            daily_ref = month_ref.collection('daily_disaggregations').document(month_id)
-            daily_ref.set({
-                "timestamp": gcp_firestore.SERVER_TIMESTAMP,
-                "hourly_usage": cleaned_payload.get('hourlyUsage', {}),
-                "appliance_breakdown": cleaned_payload.get('breakdown', {}),
-                "method": cleaned_payload.get('methodApplied', 'MCMC'),
-                "confidence_scores": cleaned_payload.get('confidence_scores', {})
-            })
+            # 3. Insert Daily Granular Arrays
+            daily_breakdowns = cleaned_payload.get('daily_breakdowns', [])
+            if daily_breakdowns:
+                batch = self.db.batch()
+                for db_item in daily_breakdowns:
+                    day_val = db_item.get('day')
+                    day_id = f"{year}-{month:02d}-{day_val:02d}"
+                    daily_ref = month_ref.collection('daily_disaggregations').document(day_id)
+                    batch.set(daily_ref, {
+                        "timestamp": gcp_firestore.SERVER_TIMESTAMP,
+                        "hourly_usage": db_item.get('hourly_usage', {}),
+                        "appliance_breakdown": db_item.get('appliance_breakdown', {}),
+                        "manual_overrides": db_item.get('manual_overrides', {}),
+                        "method": cleaned_payload.get('methodApplied', 'MCMC'),
+                        "confidence_scores": cleaned_payload.get('confidence_scores', {})
+                    })
+                await asyncio.to_thread(batch.commit)
+            else:
+                daily_ref = month_ref.collection('daily_disaggregations').document(month_id)
+                daily_ref.set({
+                    "timestamp": gcp_firestore.SERVER_TIMESTAMP,
+                    "hourly_usage": cleaned_payload.get('hourlyUsage', {}),
+                    "appliance_breakdown": cleaned_payload.get('breakdown', {}),
+                    "method": cleaned_payload.get('methodApplied', 'MCMC'),
+                    "confidence_scores": cleaned_payload.get('confidence_scores', {})
+                })
             
             AppLog.info("FIRESTORE_SAVE", f"SUCCESS: Partitioned hierarchical dual-write completed for {user_id} ({month_id}/{day_id})")
 

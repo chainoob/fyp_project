@@ -6,6 +6,7 @@ import 'config/theme.dart';
 import 'firebase_options.dart';
 import 'services/energy_repo.dart';
 import 'controllers/provider.dart';
+import 'controllers/theme_provider.dart';
 import 'routes/app_router.dart';
 
 void main() async {
@@ -42,6 +43,7 @@ void main() async {
   final goalProvider = GoalProvider(repository);
   final reportProvider = ReportProvider(repository);
   final energyProvider = EnergyProvider(repository);
+  final themeProvider = ThemeProvider();
 
   final GoRouter router = AppRouter.create(authProvider);
 
@@ -53,6 +55,7 @@ void main() async {
         ChangeNotifierProvider.value(value: goalProvider),
         ChangeNotifierProvider.value(value: reportProvider),
         ChangeNotifierProvider.value(value: energyProvider),
+        ChangeNotifierProvider.value(value: themeProvider),
       ],
       child: EnergyApp(router: router),
     ),
@@ -66,11 +69,15 @@ class EnergyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final themeProvider = context.watch<ThemeProvider>();
     return MaterialApp.router(
       title: 'SmartMeter',
-      theme: AppTheme.universityDark(),
+      theme: AppTheme.universityLight(),
+      darkTheme: AppTheme.universityDark(),
+      themeMode: themeProvider.themeMode,
       debugShowCheckedModeBanner: false,
       routerConfig: router,
     );
   }
 }
+

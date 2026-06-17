@@ -1,0 +1,33 @@
+# Exclude Git metadata
+.git/
+.gitignore
+
+# Exclude Python artifacts and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.vscode/
+.idea/
+
+# Exclude local environments
+venv/
+.venv/
+env/
+
+# Exclude large datasets and binary files
+data/raw/
+data/processed/
+data/test_domains/
+**/*.zip
+**/*.parquet
+**/*.h5
+**/*.csv
+**/*.dat
+
+# Exclude secrets and config
+serviceAccountKey.json
+.env
+.dockerignore
+.gcloudignore

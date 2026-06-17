@@ -7,6 +7,50 @@ class AppTheme {
   static const Color background = Color(0xFF121214);
   static const Color surface = Color(0xFF1E1F24);
 
+  static ThemeData universityLight() {
+    return ThemeData(
+      useMaterial3: true,
+      brightness: Brightness.light,
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: navyBlue,
+        brightness: Brightness.light,
+        primary: navyBlue,
+        secondary: ecoTeal,
+        surface: Colors.white,
+      ),
+      scaffoldBackgroundColor: const Color(0xFFF5F6F9),
+      cardTheme: CardThemeData(
+        color: Colors.white,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
+        ),
+      ),
+      appBarTheme: const AppBarTheme(
+        backgroundColor: Color(0xFFF5F6F9),
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        titleTextStyle: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 0.5, color: Colors.black87),
+        iconTheme: IconThemeData(color: Colors.black87),
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: navyBlue,
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          padding: const EdgeInsets.symmetric(vertical: 16),
+        ),
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: Colors.white,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      ),
+    );
+  }
+
   static ThemeData universityDark() {
     return ThemeData(
       useMaterial3: true,

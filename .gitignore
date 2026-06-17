@@ -31,7 +31,7 @@ render.experimental.xml
 google-services.json
 
 #vscode
-.vscode/launch.json
+.vscode/
 
 #tests
 ml_backend/tests
@@ -41,3 +41,4 @@ ml_backend/tests
 
 *.ps1
 *.h5
+*.csv

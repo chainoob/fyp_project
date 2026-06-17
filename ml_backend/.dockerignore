@@ -1,24 +1,27 @@
-# Exclude Python artifacts
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# Exclude Python artifacts recursively
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
 
-# Exclude local environment and secrets
+# Exclude local environment and credentials
 .env
-venv/
-.venv/
-env/
-serviceAccountKey.json
+**/venv/
+**/.venv/
+**/env/
+**/serviceAccountKey.json
 .git/
 
-# Exclude large datasets
-data/raw/
-data/processed/
-*.zip
-*.parquet
-*.h5
+# Exclude all dataset iterations and binary layers
+**/data/raw/**
+**/data/processed/**
+**/data/test_domains/**
+**/*.zip
+**/*.parquet
+**/*.h5
+**/*.csv
+**/*.dat
 
-# Exclude documentation and local tests
-tests/
-README.md
+# Exclude local testing structures and readmes
+**/tests/
+**/README.md

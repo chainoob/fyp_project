@@ -325,13 +325,44 @@ class ReportKPIs {
 class DailyUsagePoint {
   final int day;
   final double value;
+  final Map<String, double> applianceBreakdown;
+  final Map<String, double> manualOverrides;
+  final Map<int, double> hourlyUsage;
   
-  DailyUsagePoint(this.day, this.value);
+  DailyUsagePoint(
+    this.day, 
+    this.value, {
+    this.applianceBreakdown = const {},
+    this.manualOverrides = const {},
+    this.hourlyUsage = const {},
+  });
 
   factory DailyUsagePoint.fromMap(Map<String, dynamic> map) {
+    final Map<String, double> parsedAppliance = {};
+    final Map<String, dynamic> rawAppliance = Map<String, dynamic>.from(map['applianceBreakdown'] ?? map['appliance_breakdown'] ?? {});
+    rawAppliance.forEach((k, v) {
+      parsedAppliance[k] = (v as num).toDouble();
+    });
+
+    final Map<String, double> parsedManual = {};
+    final Map<String, dynamic> rawManual = Map<String, dynamic>.from(map['manualOverrides'] ?? map['manual_overrides'] ?? {});
+    rawManual.forEach((k, v) {
+      parsedManual[k] = (v as num).toDouble();
+    });
+
+    final Map<int, double> parsedHourly = {};
+    final Map<String, dynamic> rawHourly = Map<String, dynamic>.from(map['hourlyUsage'] ?? map['hourly_usage'] ?? {});
+    rawHourly.forEach((k, v) {
+      final int hour = int.tryParse(k) ?? 0;
+      parsedHourly[hour] = (v as num).toDouble();
+    });
+
     return DailyUsagePoint(
       map['day'] ?? 0,
       (map['value'] ?? 0).toDouble(),
+      applianceBreakdown: parsedAppliance,
+      manualOverrides: parsedManual,
+      hourlyUsage: parsedHourly,
     );
   }
 }

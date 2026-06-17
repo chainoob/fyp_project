@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:smartmeter/models/app_model.dart';
 import 'package:smartmeter/controllers/provider.dart';
+import 'package:smartmeter/controllers/theme_provider.dart';
 import 'package:smartmeter/config/theme.dart';
 import 'package:smartmeter/widgets/reusable_widget.dart';
 
@@ -20,6 +21,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final energyProvider = context.watch<EnergyProvider>();
     final applianceProvider = context.watch<ApplianceProvider>();
     final isStaffFromAuth = context.watch<AppAuthProvider>().isStaff;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     final String? photoUrl = appUser?.photoUrl;
     if (appUser == null) {
@@ -155,14 +157,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               const SizedBox(height: 8),
                               _buildManualToggleCard(dbOverrides, registeredAppliances, energyProvider),
                             ],
+                            const SizedBox(height: 24),
+                            const Text("App Preferences", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 8),
+                            Card(
+                              color: Theme.of(context).colorScheme.surface,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                side: BorderSide(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.black.withValues(alpha: 0.08)),
+                              ),
+                              child: SwitchListTile(
+                                title: Text("Dark Mode", style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.w600)),
+                                subtitle: Text("Toggle dark or light application theme", style: TextStyle(color: isDark ? Colors.white54 : Colors.black54, fontSize: 12)),
+                                value: context.watch<ThemeProvider>().isDarkMode,
+                                activeThumbColor: AppTheme.ecoTeal,
+                                onChanged: (bool val) {
+                                  context.read<ThemeProvider>().toggleTheme(val);
+                                },
+                              ),
+                            ),
                           ],
                         ),
 
                         Padding(
                           padding: const EdgeInsets.only(top: 24.0),
                           child: ListTile(
-                            tileColor: AppTheme.surface,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            tileColor: Theme.of(context).colorScheme.surface,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              side: BorderSide(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.black.withValues(alpha: 0.08)),
+                            ),
                             leading: Container(
                               padding: const EdgeInsets.all(8),
                               decoration: BoxDecoration(
@@ -171,7 +195,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                               child: const Icon(Icons.logout, color: Colors.red),
                             ),
-                            title: const Text("Log Out", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white)),
+                            title: Text("Log Out", style: TextStyle(fontWeight: FontWeight.w600, color: isDark ? Colors.white : Colors.black87)),
                             trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
                             onTap: () async {
                               final confirm = await showDialog<bool>(
@@ -225,13 +249,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildManualToggleCard(Map<String, dynamic> dbOverrides, List<Appliance> appliances, EnergyProvider provider) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     if (appliances.isEmpty) {
       return Card(
-        color: AppTheme.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: const BorderSide(color: Colors.white12)),
-        child: const Padding(
-          padding: EdgeInsets.all(16.0),
-          child: Center(child: Text("No registered appliances discovered.", style: TextStyle(color: Colors.white54, fontSize: 13))),
+        color: Theme.of(context).colorScheme.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: isDark ? Colors.white12 : Colors.black12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Center(child: Text("No registered appliances discovered.", style: TextStyle(color: isDark ? Colors.white54 : Colors.black54, fontSize: 13))),
         ),
       );
     }
@@ -252,9 +280,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
             margin: const EdgeInsets.only(bottom: 8.0),
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.03),
+              color: isDark 
+                  ? Colors.white.withValues(alpha: 0.03) 
+                  : Colors.black.withValues(alpha: 0.02),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+              border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.black.withValues(alpha: 0.08)),
             ),
             child: Row(
               children: [
@@ -263,12 +293,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   decoration: BoxDecoration(
                     color: isCurrentlyOn 
                         ? AppTheme.ecoTeal.withValues(alpha: 0.1) 
-                        : Colors.white.withValues(alpha: 0.05),
+                        : (isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.05)),
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
                     _getIconForType(appType),
-                    color: isCurrentlyOn ? AppTheme.ecoTeal : Colors.white38,
+                    color: isCurrentlyOn ? AppTheme.ecoTeal : (isDark ? Colors.white38 : Colors.black38),
                     size: 20,
                   ),
                 ),
@@ -279,8 +309,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     children: [
                       Text(
                         appName,
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: isDark ? Colors.white : Colors.black87,
                           fontSize: 14,
                           fontWeight: FontWeight.bold,
                         ),
@@ -291,13 +321,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
-                              color: Colors.white12,
+                              color: isDark ? Colors.white12 : Colors.black12,
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
                               appType.toUpperCase(),
-                              style: const TextStyle(
-                                color: Colors.white54,
+                              style: TextStyle(
+                                color: isDark ? Colors.white54 : Colors.black54,
                                 fontSize: 9,
                                 fontWeight: FontWeight.bold,
                                 letterSpacing: 0.5,
@@ -308,7 +338,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           Text(
                             isCurrentlyOn ? "Forced: ON" : "Forced: OFF",
                             style: TextStyle(
-                              color: isCurrentlyOn ? AppTheme.ecoTeal : Colors.white38,
+                              color: isCurrentlyOn ? AppTheme.ecoTeal : (isDark ? Colors.white38 : Colors.black38),
                               fontSize: 11,
                             ),
                           ),
@@ -317,12 +347,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ],
                   ),
                 ),
-              Switch(
+                Switch(
                   value: isCurrentlyOn,
                   activeTrackColor: AppTheme.ecoTeal.withValues(alpha: 0.3),
                   activeThumbColor: AppTheme.ecoTeal,
                   inactiveThumbColor: Colors.grey,
-                  inactiveTrackColor: Colors.white10,
+                  inactiveTrackColor: isDark ? Colors.white10 : Colors.black12,
                   onChanged: (bool value) async {
                     try {
                       await provider.updateManualOverride(appName, appType, value);

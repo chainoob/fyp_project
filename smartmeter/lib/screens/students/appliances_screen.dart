@@ -17,7 +17,7 @@ class AppliancesScreen extends StatelessWidget {
     final user = authProvider.currentUser;
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
 
       appBar: AppBar(
         title: const Text("My Appliances"),

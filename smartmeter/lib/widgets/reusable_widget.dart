@@ -10,9 +10,14 @@ class MetricTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: AppTheme.surface, borderRadius: BorderRadius.circular(12)),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.black.withValues(alpha: 0.08)),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -67,15 +72,16 @@ class AppAlertDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return AlertDialog(
-      backgroundColor: AppTheme.surface,
+      backgroundColor: Theme.of(context).colorScheme.surface,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: Colors.white12),
+        side: BorderSide(color: isDark ? Colors.white12 : Colors.black12),
       ),
-      title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-      content: Text(content, style: const TextStyle(color: Colors.white70)),
+      title: Text(title, style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
+      content: Text(content, style: TextStyle(color: isDark ? Colors.white70 : Colors.black54)),
       actions: actions,
     );
   }
-}
+}
