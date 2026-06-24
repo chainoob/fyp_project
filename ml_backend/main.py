@@ -479,9 +479,10 @@ async def _run_multi_tenant_pipeline(unit_id, student_uids, readings, request, b
     chunk_size = 1440 
     aggregated_fhmm = {}
     
+    user_id_for_adapt = student_uids[0] if len(student_uids) == 1 else None
     for i in range(0, len(smoothed_readings), chunk_size):
         chunk = smoothed_readings[i:i + chunk_size]
-        chunk_results = await asyncio.to_thread(fhmm.disaggregate, chunk)
+        chunk_results = await asyncio.to_thread(fhmm.disaggregate, chunk, 12, user_id_for_adapt)
         
         for k, v in chunk_results.items():
             key = str(k).lower()
@@ -710,8 +711,11 @@ async def _run_disaggregation_pipeline(user_id, raw_readings, request, registere
     if len(smoothed_readings) < 1:
         smoothed_readings = raw_readings
 
+    now = datetime.datetime.now(datetime.timezone.utc)
+    current_hour = now.hour
+
     # Offload CPU bound math to thread
-    fhmm_results = await asyncio.to_thread(fhmm.disaggregate, smoothed_readings)
+    fhmm_results = await asyncio.to_thread(fhmm.disaggregate, smoothed_readings, current_hour, user_id)
     
     raw_network = request.device_states if hasattr(request, 'device_states') and request.device_states else {}
     network_constraints = {str(k).lower(): v for k, v in raw_network.items() if v is not None}
@@ -721,9 +725,6 @@ async def _run_disaggregation_pipeline(user_id, raw_readings, request, registere
     
     normalized_fhmm = {str(k).lower(): v for k, v in fhmm_results.items()}
     registered_types = {str(app.get('type')).lower() for app in registered_appliances.values() if isinstance(app, dict) and app.get('type')}
-
-    now = datetime.datetime.now(datetime.timezone.utc)
-    current_hour = now.hour
 
     fhmm_breakdown = {}
     target_appliances = ["Fan", "Laptop", "Charger", "Lamp", "Iron", "Kettle", "Printer"]

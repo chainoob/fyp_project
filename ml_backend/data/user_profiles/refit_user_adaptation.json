@@ -1,0 +1,124 @@
+{
+  "Fan": {
+    "states": {
+      "1": {
+        "prior_mean": 105.42,
+        "prior_variance": 38.0611,
+        "observed_mean": 71.92788676073542,
+        "observed_m2": 0.003861465314922527,
+        "sample_count": 2,
+        "adapted_mean": 71.97182686380154,
+        "adapted_variance": 0.04993440231323683,
+        "observed_variance": 0.1
+      }
+    },
+    "statistics": {
+      "mean_power": 71.97,
+      "variance": 0.05,
+      "runtime_distribution": {
+        "5.5": 2
+      },
+      "activation_hours": [
+        6
+      ]
+    }
+  },
+  "Laptop": {
+    "states": {
+      "2": {
+        "prior_mean": 1170.0,
+        "prior_variance": 0.4791,
+        "observed_mean": 31.359341009366247,
+        "observed_m2": 0.0,
+        "sample_count": 2,
+        "adapted_mean": 138.96099088563102,
+        "adapted_variance": 0.045274995274995275,
+        "observed_variance": 0.1
+      }
+    },
+    "statistics": {
+      "mean_power": 138.96,
+      "variance": 0.05,
+      "runtime_distribution": {
+        "4.0": 2
+      },
+      "activation_hours": [
+        6
+      ]
+    }
+  },
+  "Charger": {
+    "states": {
+      "1": {
+        "prior_mean": 8.16,
+        "prior_variance": 0.0175,
+        "observed_mean": 8.159999999999998,
+        "observed_m2": 0.0,
+        "sample_count": 2,
+        "adapted_mean": 8.16,
+        "adapted_variance": 0.012962962962962964,
+        "observed_variance": 0.1
+      }
+    },
+    "statistics": {
+      "mean_power": 8.16,
+      "variance": 0.01,
+      "runtime_distribution": {
+        "6.0": 1,
+        "6.5": 1
+      },
+      "activation_hours": [
+        6
+      ]
+    }
+  },
+  "Lamp": {
+    "states": {
+      "1": {
+        "prior_mean": 46.13,
+        "prior_variance": 1.1494,
+        "observed_mean": 46.129999999999995,
+        "observed_m2": 0.0,
+        "sample_count": 2,
+        "adapted_mean": 46.129999999999995,
+        "adapted_variance": 0.04791562447890612,
+        "observed_variance": 0.1
+      }
+    },
+    "statistics": {
+      "mean_power": 46.13,
+      "variance": 0.05,
+      "runtime_distribution": {
+        "4.5": 1,
+        "4.0": 1
+      },
+      "activation_hours": [
+        6
+      ]
+    }
+  },
+  "Kettle": {
+    "states": {
+      "1": {
+        "prior_mean": 1577.67,
+        "prior_variance": 77.6448,
+        "observed_mean": 1470.6271625348927,
+        "observed_m2": 0.009490767265695685,
+        "sample_count": 2,
+        "adapted_mean": 1470.6960492798646,
+        "adapted_variance": 0.049967822814396844,
+        "observed_variance": 0.1
+      }
+    },
+    "statistics": {
+      "mean_power": 1470.7,
+      "variance": 0.05,
+      "runtime_distribution": {
+        "0.0": 2
+      },
+      "activation_hours": [
+        6
+      ]
+    }
+  }
+}

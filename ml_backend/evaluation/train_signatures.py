@@ -30,11 +30,14 @@ class SignatureTrainer:
         power = np.clip(power, 0.0, None)
         return power
 
-    def train_appliance(self, key: str, n_states: int, name: str) -> Tuple[List[float], float, List[List[float]], List[float]]:
+    def train_appliance(self, key: str, n_states: int, name: str, max_power: float = None) -> Tuple[List[float], float, List[List[float]], List[float]]:
         """Extracts states using KMeans and computes transition matrices and standard deviations using vectorized NumPy operations."""
         AppLog.info("TRAIN_START", f"Training signature for {name} on {key}")
         power = self.load_sensor_power(key)
         
+        if max_power is not None:
+            power = power[power <= max_power]
+            
         # Reshape for clustering
         X = power.reshape(-1, 1)
         
@@ -77,14 +80,13 @@ class SignatureTrainer:
             col = pair % n_states
             transitions[row, col] = count
             
-        # Normalize transitions row-wise to get probabilities
+        # Normalize transitions row-wise to get probabilities (applying Laplace smoothing)
+        alpha = 0.1
         transition_matrix = []
         for row in transitions:
-            total = np.sum(row)
-            if total > 0:
-                normalized_row = (row / total).tolist()
-            else:
-                normalized_row = [1.0 / n_states] * n_states
+            smoothed_row = row + alpha
+            total = np.sum(smoothed_row)
+            normalized_row = (smoothed_row / total).tolist()
             transition_matrix.append(normalized_row)
             
         # Calculate initial state probabilities
@@ -108,44 +110,112 @@ if __name__ == "__main__":
         
     trainer = SignatureTrainer(h5_file)
     
-    # Target UK-DALE House 1 appliance settings
-    # Format: ApplianceName: (HDF5_key, target_states_count)
+    # Target UK-DALE House 1 appliance settings and metadata configuration
     targets = {
-        "Lamp": ("/building1/elec/meter42", 2),
-        "Fan": ("/building1/elec/meter7", 2),
-        "Laptop": ("/building1/elec/meter24", 3),
-        "Charger": ("/building1/elec/meter26", 2),
-        "Kettle": ("/building1/elec/meter11", 2),
-        "Iron": ("/building1/elec/meter37", 3),
-        "Printer": ("/building1/elec/meter36", 2)
+        "Lamp": {
+            "key": "/building1/elec/meter42",
+            "n_states": 2,
+            "max_power": 100.0,
+            "type": "resistive",
+            "description": "UK-DALE-distilled: LED/Fluorescent states",
+            "prob_day": 0.1,
+            "prob_night": 0.7,
+            "max_duration_hr": 10.0
+        },
+        "Fan": {
+            "key": "/building1/elec/meter7",
+            "n_states": 2,
+            "max_power": 150.0,
+            "type": "resistive",
+            "description": "UK-DALE-distilled: Low/High fan states",
+            "prob_day": 0.35,
+            "prob_night": 0.4,
+            "max_duration_hr": 24.0
+        },
+        "Laptop": {
+            "key": "/building1/elec/meter24",
+            "n_states": 3,
+            "max_power": 150.0,
+            "type": "smps",
+            "description": "UK-DALE-distilled: Idle/Standard/Heavy-Load laptop states",
+            "prob_day": 0.6,
+            "prob_night": 0.4,
+            "max_duration_hr": 12.0
+        },
+        "Charger": {
+            "key": "/building1/elec/meter26",
+            "n_states": 2,
+            "max_power": 30.0,
+            "type": "smps",
+            "description": "Mobile/Tablet Charger: Low-power consumption",
+            "prob_day": 0.8,
+            "prob_night": 0.9,
+            "max_duration_hr": 8.0
+        },
+        "Kettle": {
+            "key": "/building1/elec/meter11",
+            "n_states": 2,
+            "max_power": 3500.0,
+            "type": "heating",
+            "description": "UK-DALE-distilled: High-power thermal signature",
+            "prob_day": 0.1,
+            "prob_night": 0.05,
+            "max_duration_hr": 0.5
+        },
+        "Iron": {
+            "key": "/building1/elec/meter37",
+            "n_states": 3,
+            "max_power": 2500.0,
+            "type": "thermal_cycling",
+            "description": "UK-DALE-distilled: Cycling thermostat states",
+            "prob_day": 0.05,
+            "prob_night": 0.02,
+            "max_duration_hr": 1.0
+        },
+        "Printer": {
+            "key": "/building1/elec/meter36",
+            "n_states": 2,
+            "max_power": 2000.0,
+            "type": "intermittent_high_load",
+            "description": "Desk Printer: Standby/Warming/Printing",
+            "prob_day": 0.15,
+            "prob_night": 0.05,
+            "max_duration_hr": 2.0
+        }
     }
     
-    # Load existing signatures
+    # Load existing signatures if present
+    signatures = {}
     try:
-        with open(signatures_file, 'r') as f:
-            signatures = json.load(f)
+        if os.path.exists(signatures_file):
+            with open(signatures_file, 'r') as f:
+                signatures = json.load(f)
     except Exception as e:
-        AppLog.warning("LOAD_SIGNATURES", f"Could not load existing signatures: {e}. Starting fresh.")
-        signatures = {}
+        AppLog.warning("LOAD_SIGNATURES", f"Could not load existing signatures: {e}.")
         
     # Run training and update signature blocks
     updated_any = False
-    for name, (key, n_states) in targets.items():
+    for name, config in targets.items():
         try:
-            means, std_dev, trans_matrix, start_prob = trainer.train_appliance(key, n_states, name)
+            means, std_dev, trans_matrix, start_prob = trainer.train_appliance(
+                config["key"], config["n_states"], name, max_power=config["max_power"]
+            )
             
-            # Update values in-place
-            if name not in signatures:
-                signatures[name] = {}
-                
-            signatures[name]["states"] = [round(m, 2) for m in means]
-            signatures[name]["means"] = [round(m, 2) for m in means]
-            signatures[name]["max_state_index"] = n_states - 1
-            signatures[name]["std_dev"] = round(std_dev, 2)
-            signatures[name]["covariances"] = [round(std_dev**2, 4) for _ in range(n_states)]
-            signatures[name]["transition_matrix"] = [[round(val, 4) for val in row] for row in trans_matrix]
-            signatures[name]["start_probabilities"] = [round(val, 4) for val in start_prob]
-            signatures[name]["default_wattage"] = round(means[-1], 2)
+            signatures[name] = {
+                "states": [round(m, 2) for m in means],
+                "max_state_index": config["n_states"] - 1,
+                "std_dev": round(std_dev, 2),
+                "type": config["type"],
+                "description": config["description"],
+                "prob_day": config["prob_day"],
+                "prob_night": config["prob_night"],
+                "max_duration_hr": config["max_duration_hr"],
+                "default_wattage": round(means[-1], 2),
+                "transition_matrix": [[round(val, 4) for val in row] for row in trans_matrix],
+                "start_probabilities": [round(val, 4) for val in start_prob],
+                "means": [round(m, 2) for m in means],
+                "covariances": [round(std_dev**2, 4) for _ in range(config["n_states"])]
+            }
             updated_any = True
             
         except Exception as e:
