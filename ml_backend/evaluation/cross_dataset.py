@@ -174,6 +174,52 @@ class MetricsCalculator:
         """Calculates Mean Absolute Error (MAE) in Watts."""
         return float(np.mean(np.abs(y_true - y_pred)))
 
+    @staticmethod
+    def calculate_nde(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        """Calculates Normalized Disaggregation Error (NDE)."""
+        sum_sq_diff = np.sum((y_true - y_pred) ** 2)
+        sum_sq_true = np.sum(y_true ** 2)
+        if sum_sq_true == 0.0:
+            return 0.0 if sum_sq_diff == 0.0 else 1.0
+        return float(sum_sq_diff / sum_sq_true)
+
+    @staticmethod
+    def calculate_event_metrics(y_true: np.ndarray, y_pred: np.ndarray, index: pd.DatetimeIndex, threshold: float = 5.0, tolerance_seconds: int = 30) -> dict:
+        """Calculates event precision, recall, and F1 (Stage 8)."""
+        true_active = (y_true > threshold).astype(int)
+        pred_active = (y_pred > threshold).astype(int)
+        
+        true_diff = np.diff(true_active, prepend=0)
+        pred_diff = np.diff(pred_active, prepend=0)
+        
+        true_indices = np.where(true_diff == 1)[0]
+        pred_indices = np.where(pred_diff == 1)[0]
+        
+        true_events = (index[true_indices].astype(np.int64) // 1e9).tolist()
+        pred_events = (index[pred_indices].astype(np.int64) // 1e9).tolist()
+        
+        matched_true = set()
+        matched_pred = set()
+        
+        for i, t in enumerate(true_events):
+            for j, p in enumerate(pred_events):
+                if j not in matched_pred and abs(t - p) <= tolerance_seconds:
+                    matched_true.add(i)
+                    matched_pred.add(j)
+                    break
+                    
+        tp = len(matched_true)
+        precision = tp / len(pred_events) if pred_events else 0.0
+        recall = tp / len(true_events) if true_events else 0.0
+        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+        
+        return {
+            "event_precision": precision,
+            "event_recall": recall,
+            "event_f1": f1
+        }
+
+
 class CrossDatasetEvaluator:
     """Orchestrates the cross-dataset evaluation protocol."""
     
@@ -182,7 +228,7 @@ class CrossDatasetEvaluator:
         self.data_loader = DataLoader(target_frequency=target_frequency, max_rows=max_rows)
         self.metrics = MetricsCalculator()
 
-    def evaluate_consolidated(self, file_path: str, label_mapping: Dict[str, str], user_id: Optional[str] = None) -> Dict[str, Any]:
+    def evaluate_consolidated(self, file_path: str, label_mapping: Dict[str, str], user_id: Optional[str] = None, adapt_online: bool = False) -> Dict[str, Any]:
         """Runs evaluation using a consolidated CSV file containing both aggregate and appliance signals."""
         AppLog.info("EVAL_START", f"Starting evaluation on consolidated file: {file_path}")
         df = self.data_loader.load_file(file_path, is_dat=False)
@@ -199,13 +245,13 @@ class CrossDatasetEvaluator:
             else:
                 raise ValueError("Dataset must contain an 'aggregate' column.")
                 
-        return self._run_disaggregation_and_metrics(df_resampled, user_id=user_id)
-
-    def evaluate_raw_channels(self, aggregate_path: str, appliance_paths: Dict[str, str], is_dat: bool = True, user_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._run_disaggregation_and_metrics(df_resampled, user_id=user_id, adapt_online=adapt_online)
+ 
+    def evaluate_raw_channels(self, aggregate_path: str, appliance_paths: Dict[str, str], is_dat: bool = True, user_id: Optional[str] = None, adapt_online: bool = False) -> Dict[str, Any]:
         """Runs evaluation using raw independent channel files (e.g. UK-DALE house channels)."""
         AppLog.info("EVAL_START", f"Starting evaluation aligning {len(appliance_paths)} channels with {aggregate_path}")
         df_aligned = self.data_loader.align_channels(aggregate_path, appliance_paths, is_dat=is_dat)
-        return self._run_disaggregation_and_metrics(df_aligned, user_id=user_id)
+        return self._run_disaggregation_and_metrics(df_aligned, user_id=user_id, adapt_online=adapt_online)
 
     def _calibrate_means_via_centroids(self, aggregate_signal: np.ndarray):
         """Phase 1: Bounded Centroid Matching to calibrate model states dynamically."""
@@ -241,7 +287,7 @@ class CrossDatasetEvaluator:
                 for s in range(len(model.means_)):
                     model.means_[s][0] = model.means_[s][0] * shift_ratio
 
-    def _run_disaggregation_and_metrics(self, df: pd.DataFrame, user_id: Optional[str] = None) -> Dict[str, Any]:
+    def _run_disaggregation_and_metrics(self, df: pd.DataFrame, user_id: Optional[str] = None, adapt_online: bool = False) -> Dict[str, Any]:
         raw_aggregate = df['aggregate'].values
         assert len(raw_aggregate) > 0, "Aggregate signal length must be greater than 0."
         
@@ -277,7 +323,7 @@ class CrossDatasetEvaluator:
         
         # 3. Disaggregate
         try:
-            results = self.fhmm.disaggregate(scaled_aggregate.tolist(), user_id=user_id)
+            results = self.fhmm.disaggregate(scaled_aggregate.tolist(), user_id=user_id, adapt_online=adapt_online)
         except TypeError:
             # Fallback for baseline FHMM Service which does not support user_id adaptation parameter
             results = self.fhmm.disaggregate(scaled_aggregate.tolist())
@@ -305,14 +351,28 @@ class CrossDatasetEvaluator:
                 recall = self.metrics.calculate_recall(true_trace, final_pred, threshold=threshold)
                 sae = self.metrics.calculate_sae(true_trace, final_pred)
                 mae = self.metrics.calculate_mae(true_trace, final_pred)
+                nde = self.metrics.calculate_nde(true_trace, final_pred)
+                
+                event_metrics = self.metrics.calculate_event_metrics(
+                    true_trace, 
+                    final_pred, 
+                    df.index, 
+                    threshold=threshold, 
+                    tolerance_seconds=30
+                )
                 
                 evaluation_results[appliance] = {
+                    "Event-F1": round(event_metrics["event_f1"], 4),
+                    "Event-Precision": round(event_metrics["event_precision"], 4),
+                    "Event-Recall": round(event_metrics["event_recall"], 4),
+                    "NDE": round(nde, 4),
                     "F1-Score": round(f1, 4),
                     "Precision": round(precision, 4),
                     "Recall": round(recall, 4),
                     "SAE": round(sae, 4),
                     "MAE (W)": round(mae, 4)
                 }
+
                 
         AppLog.info("EVAL_COMPLETE", "Evaluation metrics generated successfully.")
         return evaluation_results
@@ -356,6 +416,8 @@ if __name__ == "__main__":
     parser.add_argument('--generate-mock-dir', type=str, help="Path to generate mock UK-DALE directory for testing")
     parser.add_argument('--max-rows', type=int, default=None, help="Maximum number of rows to load from dataset files")
     parser.add_argument('--user-id', type=str, default=None, help="User profile ID for signature adaptation")
+    parser.add_argument('--reset-profile', action='store_true', help="Delete existing adapted profile before run")
+    parser.add_argument('--adapt-online', action='store_true', default=False, help="Enable online Bayesian adaptation parameter updates during decoding")
     
     args = parser.parse_args()
     
@@ -368,6 +430,12 @@ if __name__ == "__main__":
         print(f"Mock UK-DALE data generated at: {args.generate_mock_dir}")
         sys.exit(0)
         
+    if args.user_id and args.reset_profile:
+        profile_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'user_profiles', f"{args.user_id}.json"))
+        if os.path.exists(profile_path):
+            print(f"Deleting existing user profile: {profile_path}")
+            os.remove(profile_path)
+            
     try:
         fhmm = FHMMService(signatures_path=sig_path)
         evaluator = CrossDatasetEvaluator(fhmm, target_frequency=args.resample_freq, max_rows=args.max_rows)
@@ -395,7 +463,7 @@ if __name__ == "__main__":
                     "kettle": "Kettle",
                     "printer": "Printer"
                 }
-            report = evaluator.evaluate_consolidated(args.consolidated_csv, label_mapping, user_id=args.user_id)
+            report = evaluator.evaluate_consolidated(args.consolidated_csv, label_mapping, user_id=args.user_id, adapt_online=args.adapt_online)
         elif args.aggregate_dat and args.appliance_dat:
             appliance_paths = {}
             for app_list in args.appliance_dat:
@@ -410,7 +478,8 @@ if __name__ == "__main__":
                 args.aggregate_dat, 
                 appliance_paths, 
                 is_dat=args.aggregate_dat.endswith('.dat') or '.dat' in args.aggregate_dat,
-                user_id=args.user_id
+                user_id=args.user_id,
+                adapt_online=args.adapt_online
             )
         else:
             parser.print_help()

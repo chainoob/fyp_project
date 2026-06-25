@@ -2,122 +2,138 @@
   "Fan": {
     "states": {
       "1": {
-        "prior_mean": 105.42,
-        "prior_variance": 38.0611,
-        "observed_mean": 71.92788676073542,
-        "observed_m2": 0.003861465314922527,
-        "sample_count": 2,
-        "adapted_mean": 71.97182686380154,
-        "adapted_variance": 0.04993440231323683,
-        "observed_variance": 0.1
+        "prior_mean": 105.17199746760947,
+        "prior_variance": 415.2667075623364,
+        "observed_mean": 76.77679584367274,
+        "observed_variance": 375.316918530275,
+        "sample_count": 5817,
+        "adapted_mean": 77.01878665348984,
+        "adapted_variance": 375.65738034237717
       }
     },
     "statistics": {
-      "mean_power": 71.97,
-      "variance": 0.05,
+      "mean_power": 77.02,
+      "variance": 375.66,
       "runtime_distribution": {
-        "5.5": 2
+        "7.0": 1
       },
       "activation_hours": [
-        6
+        12
       ]
     }
   },
   "Laptop": {
     "states": {
       "2": {
-        "prior_mean": 1170.0,
-        "prior_variance": 0.4791,
-        "observed_mean": 31.359341009366247,
-        "observed_m2": 0.0,
-        "sample_count": 2,
-        "adapted_mean": 138.96099088563102,
-        "adapted_variance": 0.045274995274995275,
-        "observed_variance": 0.1
+        "prior_mean": 41.53991761972001,
+        "prior_variance": 98.29124976937604,
+        "observed_mean": 18.12705828861174,
+        "observed_variance": 83.27113207925689,
+        "sample_count": 687,
+        "adapted_mean": 19.715447659785976,
+        "adapted_variance": 84.29013599310485
       }
     },
     "statistics": {
-      "mean_power": 138.96,
-      "variance": 0.05,
+      "mean_power": 19.72,
+      "variance": 84.29,
       "runtime_distribution": {
-        "4.0": 2
+        "1.0": 1
       },
       "activation_hours": [
-        6
+        12
       ]
     }
   },
   "Charger": {
     "states": {
       "1": {
-        "prior_mean": 8.16,
-        "prior_variance": 0.0175,
-        "observed_mean": 8.159999999999998,
-        "observed_m2": 0.0,
-        "sample_count": 2,
-        "adapted_mean": 8.16,
-        "adapted_variance": 0.012962962962962964,
-        "observed_variance": 0.1
+        "prior_mean": 8.160428467795459,
+        "prior_variance": 0.27984027064370154,
+        "observed_mean": 12.75877816149558,
+        "observed_variance": 193.53681163760726,
+        "sample_count": 10373,
+        "adapted_mean": 12.736719494635272,
+        "adapted_variance": 192.60974183348674
       }
     },
     "statistics": {
-      "mean_power": 8.16,
-      "variance": 0.01,
+      "mean_power": 12.74,
+      "variance": 192.61,
       "runtime_distribution": {
-        "6.0": 1,
-        "6.5": 1
+        "12.0": 1
       },
       "activation_hours": [
-        6
+        12
       ]
     }
   },
   "Lamp": {
     "states": {
       "1": {
-        "prior_mean": 46.13,
-        "prior_variance": 1.1494,
-        "observed_mean": 46.129999999999995,
-        "observed_m2": 0.0,
-        "sample_count": 2,
-        "adapted_mean": 46.129999999999995,
-        "adapted_variance": 0.04791562447890612,
-        "observed_variance": 0.1
+        "prior_mean": 36.52513294797688,
+        "prior_variance": 224.85348494184825,
+        "observed_mean": 37.895675572285214,
+        "observed_variance": 237.12262594602294,
+        "sample_count": 2499,
+        "adapted_mean": 37.868791644778184,
+        "adapted_variance": 236.8819601750505
       }
     },
     "statistics": {
-      "mean_power": 46.13,
-      "variance": 0.05,
+      "mean_power": 37.87,
+      "variance": 236.88,
       "runtime_distribution": {
-        "4.5": 1,
-        "4.0": 1
+        "3.0": 1
       },
       "activation_hours": [
-        6
+        12
       ]
     }
   },
   "Kettle": {
     "states": {
       "1": {
-        "prior_mean": 1577.67,
-        "prior_variance": 77.6448,
-        "observed_mean": 1470.6271625348927,
-        "observed_m2": 0.009490767265695685,
-        "sample_count": 2,
-        "adapted_mean": 1470.6960492798646,
-        "adapted_variance": 0.049967822814396844,
-        "observed_variance": 0.1
+        "prior_mean": 1556.5940906483074,
+        "prior_variance": 35179.81257652121,
+        "observed_mean": 1502.002288255893,
+        "observed_variance": 5381.225900730603,
+        "sample_count": 432,
+        "adapted_mean": 1507.6653382965999,
+        "adapted_variance": 8794.953144130302
       }
     },
     "statistics": {
-      "mean_power": 1470.7,
-      "variance": 0.05,
+      "mean_power": 1507.67,
+      "variance": 8794.95,
       "runtime_distribution": {
-        "0.0": 2
+        "0.5": 1
       },
       "activation_hours": [
-        6
+        12
+      ]
+    }
+  },
+  "Printer": {
+    "states": {
+      "1": {
+        "prior_mean": 150.24665551839465,
+        "prior_variance": 103906.99852660477,
+        "observed_mean": 153.69147368425746,
+        "observed_variance": 277.69270490099257,
+        "sample_count": 2549,
+        "adapted_mean": 153.62520169183995,
+        "adapted_variance": 25976.749631651193
+      }
+    },
+    "statistics": {
+      "mean_power": 153.63,
+      "variance": 25976.75,
+      "runtime_distribution": {
+        "3.0": 1
+      },
+      "activation_hours": [
+        12
       ]
     }
   }

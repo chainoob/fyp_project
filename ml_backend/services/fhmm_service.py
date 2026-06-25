@@ -48,11 +48,16 @@ class FHMMService:
                 model.n_features = 1
                 
                 if 'transition_matrix' in stats:
-                    model.startprob_ = np.array(stats['start_probabilities'])
+                    model.startprob_ = np.array(stats.get('start_probabilities', stats.get('start_probs')))
                     model.transmat_ = np.array(stats['transition_matrix'])
                     model.means_ = np.array(means_source).reshape(-1, 1)
-                    # Enforce a minimum covariance to prevent precision explosion in joint log-likelihood
-                    covars_data = [max(float(c), 25.0) for c in stats['covariances']]
+                    # Enforce covariance bounds (225.0 min for state 0, [25.0, 2500.0] for active states)
+                    covars_data = []
+                    for state_idx, c in enumerate(stats['covariances']):
+                        if state_idx == 0:
+                            covars_data.append(max(float(c), 225.0))
+                        else:
+                            covars_data.append(min(max(float(c), 25.0), 2500.0))
                     model.covars_ = np.array(covars_data).reshape(-1, 1)
                 else:
                     std_dev = stats.get('std_dev', 1.0)
@@ -67,7 +72,13 @@ class FHMMService:
                     model.transmat_ = trans_matrix
                     
                     model.means_ = np.array([[float(s)] for s in means_source])
-                    model.covars_ = np.array([[max(float(std_dev**2), 25.0)] for _ in range(n_states)])
+                    covars_data = []
+                    for state_idx in range(n_states):
+                        if state_idx == 0:
+                            covars_data.append([max(float(std_dev**2), 225.0)])
+                        else:
+                            covars_data.append([min(max(float(std_dev**2), 25.0), 2500.0)])
+                    model.covars_ = np.array(covars_data)
                 
                 models[appliance] = model
                 AppLog.info("FHMM_INIT", f"Successfully bounded sequence model layer for: {appliance}")
@@ -122,7 +133,7 @@ class FHMMService:
             
         return base_trans
 
-    def disaggregate(self, aggregate_signal: List[float], hour: Optional[int] = None, user_id: Optional[str] = None) -> Dict[str, List[float]]:
+    def disaggregate(self, aggregate_signal: List[float], hour: Optional[int] = None, user_id: Optional[str] = None, adapt_online: bool = True) -> Dict[str, List[float]]:
         # High-level: Decodes aggregate wattage into independent appliance traces using Joint Beam Search.
         if not aggregate_signal:
             return {}
@@ -133,6 +144,7 @@ class FHMMService:
             
         original_means = {name: model.means_.copy() for name, model in self.models.items()}
         original_covars = {name: model.covars_.copy() for name, model in self.models.items()}
+        original_trans = {name: model.transmat_.copy() for name, model in self.models.items()}
         
         if user_id:
             try:
@@ -142,17 +154,27 @@ class FHMMService:
                 for appliance, app_profile in profile.items():
                     if appliance in self.models:
                         model = self.models[appliance]
+                        
+                        # Load adapted means/variances
                         states_profile = app_profile.get("states", {})
                         for state_key, val in states_profile.items():
                             state_idx = int(state_key)
                             if state_idx < len(model.means_):
-                                model.means_[state_idx, 0] = val.get("adapted_mean")
-                                # Enforce a minimum covariance to prevent precision explosion
-                                adapted_var = max(val.get("adapted_variance", 25.0), 25.0)
-                                if len(model.covars_.shape) == 3:
-                                    model.covars_[state_idx, 0, 0] = adapted_var
-                                else:
-                                    model.covars_[state_idx, 0] = adapted_var
+                                # BUG-02: Only adapt if we have enough observations (e.g. 100 frames)
+                                if val.get("sample_count", 0) >= 100:
+                                    model.means_[state_idx, 0] = val.get("adapted_mean")
+                                    if state_idx == 0:
+                                        adapted_var = max(val.get("adapted_variance", 225.0), 225.0)
+                                    else:
+                                        adapted_var = min(max(val.get("adapted_variance", 25.0), 25.0), 2500.0)
+                                    if len(model.covars_.shape) == 3:
+                                        model.covars_[state_idx, 0, 0] = adapted_var
+                                    else:
+                                        model.covars_[state_idx, 0] = adapted_var
+                                    
+                        # Stage 7: Load adapted transition matrix if available
+                        if "transition_matrix" in app_profile:
+                            model.transmat_ = np.array(app_profile["transition_matrix"])
             except Exception as e:
                 AppLog.error("BAYESIAN_ADAPT_LOAD_FAILED", f"Failed to load/apply user profiles for {user_id}: {str(e)}")
             
@@ -188,7 +210,7 @@ class FHMMService:
             c_states = joint_states[:, m_idx]
             joint_log_trans += log_transmat[p_states[:, None], c_states[None, :]]
             
-        beam_width = 100
+        beam_width = min(100, len(joint_states))
         T = len(aggregate_signal)
         
         x0 = aggregate_signal[0]
@@ -245,7 +267,7 @@ class FHMMService:
                 "Charger": 10,
                 "Lamp": 10,
                 "Iron": 30,
-                "Kettle": 10,
+                "Kettle": 1,
                 "Printer": 2,
             }
             min_dur = min_durations.get(name, 1)
@@ -259,7 +281,10 @@ class FHMMService:
                         i += 1
                     end = i
                     duration = end - start
+                    if name == "Kettle":
+                        AppLog.info("KETTLE_DURATION_DETECTED", f"Detected Kettle event: start={start}, end={end}, duration={duration} frames")
                     if duration < min_dur:
+                        AppLog.info("DURATION_SUPPRESS", f"Suppressed event for {name}: start={start}, end={end}, duration={duration} frames")
                         for j in range(start, end):
                             trace[j] = 0.0
                 else:
@@ -278,16 +303,18 @@ class FHMMService:
         for name in known_appliances:
             if name in disaggregated_data and name in self.models:
                 trace = np.array(disaggregated_data[name])
-                std_dev = self.signatures.get(name, {}).get("std_dev", 10.0)
-                # Enforce a minimum standard deviation for the residual clearance limit check
-                limit = 3.0 * max(std_dev, 10.0)
+                model = self.models[name]
+                active_mean = float(model.means_[-1][0])
+                # Off-state standard deviation
+                sigma_off = float(np.sqrt(float(model.covars_[0][0])))
+                limit = max(0.2 * active_mean, 3.0 * sigma_off)
                 
                 for t in range(len(trace)):
                     if trace[t] > 5.0 and unassigned_residual[t] > limit:
                         trace[t] = 0.0
                 disaggregated_data[name] = trace.tolist()
 
-        if user_id:
+        if user_id and adapt_online:
             try:
                 from services.bayesian_adaptation import BayesianAdaptationService
                 adaptation_service = BayesianAdaptationService()
@@ -296,19 +323,39 @@ class FHMMService:
                         trace = disaggregated_data[name]
                         active_samples = [v for v in trace if v > 5.0]
                         if active_samples:
-                            observed_mean = float(np.mean(active_samples))
-                            model = self.models[name]
-                            active_state_idx = len(model.means_) - 1
-                            adaptation_service.update_appliance_state(user_id, name, active_state_idx, observed_mean)
+                            other_pred = np.zeros(len(aggregate_signal))
+                            for other_name in disaggregated_data.keys():
+                                if other_name != name:
+                                    other_pred += np.array(disaggregated_data[other_name])
                             
-                            sample_duration_hr = 24.0 / len(trace) if len(trace) > 0 else 1.0
-                            daily_runtime = len(active_samples) * sample_duration_hr
-                            adaptation_service.update_appliance_statistics(user_id, name, [hour], daily_runtime)
+                            actual_active_samples = []
+                            for t, val in enumerate(trace):
+                                if val > 5.0:
+                                    act_val = max(0.0, aggregate_signal[t] - other_pred[t])
+                                    act_val = min(act_val, aggregate_signal[t])
+                                    actual_active_samples.append(act_val)
+                            
+                            if actual_active_samples:
+                                observed_mean = float(np.mean(actual_active_samples))
+                                observed_var = float(np.var(actual_active_samples)) if len(actual_active_samples) > 1 else 0.0
+                                num_samples = len(actual_active_samples)
+                                
+                                model = self.models[name]
+                                active_state_idx = len(model.means_) - 1
+                                adaptation_service.update_appliance_state(
+                                    user_id, name, active_state_idx, observed_mean, 
+                                    observed_variance=observed_var, num_samples=num_samples
+                                )
+                                
+                                sample_duration_hr = 24.0 / len(trace) if len(trace) > 0 else 1.0
+                                daily_runtime = len(active_samples) * sample_duration_hr
+                                adaptation_service.update_appliance_statistics(user_id, name, [hour], daily_runtime)
             except Exception as e:
                 AppLog.error("BAYESIAN_ADAPT_UPDATE_FAILED", f"Failed to update user profiles for {user_id}: {str(e)}")
 
         for name, model in self.models.items():
             model.means_ = original_means[name]
             model.covars_ = original_covars[name].reshape(model.n_components, -1)
+            model.transmat_ = original_trans[name]
 
         return disaggregated_data
